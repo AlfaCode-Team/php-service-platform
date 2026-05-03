@@ -1,0 +1,3 @@
+[submodule "modules/common-type-alias"]
+	path = modules/common-type-alias
+	url = https://github.com/hakrichTech/type-alias.git
