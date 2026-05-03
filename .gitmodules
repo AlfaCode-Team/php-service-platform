@@ -1,3 +1,12 @@
 [submodule "modules/common-type-alias"]
 	path = modules/common-type-alias
 	url = https://github.com/hakrichTech/type-alias.git
+[submodule "modules/bind-it"]
+	path = modules/bind-it
+	url = https://github.com/hakrichTech/bindIt.git
+[submodule "modules/php-io-cli"]
+	path = modules/php-io-cli
+	url = https://github.com/AlfaCode-Team/php-io-cli.git
+[submodule "modules/module-template"]
+	path = modules/module-template
+	url = https://github.com/AlfaCode-Team/module-template.git
