@@ -10,9 +10,6 @@
 [submodule "modules/module-template"]
 	path = modules/module-template
 	url = https://github.com/AlfaCode-Team/module-template.git
-[submodule "modules/orchestrator"]
-	path = modules/orchestrator
-	url = https://github.com/AlfaCode-Team/orchestrator.git
 [submodule "modules/pulse-engine"]
 	path = modules/pulse-engine
 	url = https://github.com/AlfaCode-Team/Pulse-Engine.git
