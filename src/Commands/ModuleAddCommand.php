@@ -4,8 +4,7 @@ declare(strict_types=1);
 namespace AlfacodeTeam\PhpServicePlatform\Commands;
 
 use AlfacodeTeam\PhpIoCli\AbstractCommand;
-use AlfacodeTeam\PhpIoCli\Components\SpinnerComponent;
-use AlfacodeTeam\PhpIoCli\Depends\Colors;
+use AlfacodeTeam\PhpIoCli\Components\ProgressBar;
 use AlfacodeTeam\PhpIoCli\Depends\Shell;
 use AlfacodeTeam\PhpIoCli\Depends\ShellResult;
 
@@ -40,10 +39,10 @@ Example:
   php cli module:add payments git@github.com:acme/payments.git acme --offline
 HELP;
 
-        $this->addArgument('name',    'Module name in kebab-case (e.g. user-auth)',       required: true);
-        $this->addArgument('git-url', 'Git repository URL (SSH or HTTPS)',                required: true);
-        $this->addArgument('org',     'Composer vendor / GitHub org (e.g. acme)',         required: true);
-        $this->addOption('--offline', '-o', 'Install without network (COMPOSER_DISABLE_NETWORK=1)');
+        $this->addArgument('name',    'Module name in kebab-case (e.g. user-auth)',  required: true);
+        $this->addArgument('git-url', 'Git repository URL (SSH or HTTPS)',           required: true);
+        $this->addArgument('org',     'Composer vendor / GitHub org (e.g. acme)',    required: true);
+        $this->addOption('offline', 'o', 'Install without network (COMPOSER_DISABLE_NETWORK=1)');
     }
 
     /* =========================================================
@@ -52,15 +51,17 @@ HELP;
 
     protected function handle(): int
     {
-        $name       = (string) $this->argument('name');
-        $gitUrl     = (string) $this->argument('git-url');
-        $org        = (string) $this->argument('org');
-        $offline    = $this->hasOption('offline');
+        $name    = (string) $this->argument('name');
+        $gitUrl  = (string) $this->argument('git-url');
+        $org     = (string) $this->argument('org');
+        $offline = $this->hasOption('offline');
 
-        $modulePath  = "modules/{$name}";
-        $packageName = "{$org}/{$name}";
-        $nsOrg       = $this->toPascalCase($org);
-        $nsMod       = $this->toPascalCase($name);
+        $projectRoot   = $this->projectRoot();
+        $moduleRelPath = "modules/{$name}";
+        $modulePath    = "{$projectRoot}/{$moduleRelPath}";
+        $packageName   = "{$org}/{$name}";
+        $nsOrg         = $this->toPascalCase($org);
+        $nsMod         = $this->toPascalCase($name);
 
         /* ── 1. Summary table ─────────────────────────────── */
         $this->section('Module Add Plan');
@@ -69,12 +70,12 @@ HELP;
             ->headers(['Field', 'Value'])
             ->style('compact')
             ->rows([
-                ['Module name',     $name],
-                ['Git URL',         $gitUrl],
-                ['Path',            $modulePath],
-                ['Package',         $packageName],
-                ['Namespace',       "{$nsOrg}\\{$nsMod}\\"],
-                ['Composer mode',   $offline ? 'offline (no network)' : 'online'],
+                ['Module name',   $name],
+                ['Git URL',       $gitUrl],
+                ['Path',          $moduleRelPath],
+                ['Package',       $packageName],
+                ['Namespace',     "{$nsOrg}\\{$nsMod}\\"],
+                ['Composer mode', $offline ? 'offline (no network)' : 'online'],
             ])
             ->render();
 
@@ -87,90 +88,75 @@ HELP;
         $this->newLine();
 
         /* ── 3. Guard: already registered? ───────────────── */
-        if ($this->moduleExists($modulePath)) {
+        if ($this->moduleExists($projectRoot, $moduleRelPath)) {
             $this->alertWarning(
                 'Module already exists',
-                ["'{$modulePath}' is already registered in .gitmodules. Nothing to do."]
+                ["'{$moduleRelPath}' is already registered in .gitmodules. Nothing to do."]
             );
             return self::SUCCESS;
         }
 
-        /* ── 4. Overall progress bar (6 steps) ───────────── */
-        $progress = $this->progressBar('Module bootstrap', 6);
-        $progress->start();
+        /* ── 4. Single determinate bar — one advance() per completed step ──
+         *
+         * Only ONE ProgressBar instance is ever live at a time.
+         * Shell steps pass $overall into runStep() so the tick callback
+         * redraws the same bar (advance(0) = redraw only, no increment).
+         * Pure-PHP steps do their work silently; the bar redraws on the
+         * next advance() call which moves the fill forward.
+         * ──────────────────────────────────────────────────────────────── */
+        $overall = $this->progressBar('Module bootstrap', 6);
+        $overall->start();
 
         /* ── Step 1: git submodule add ────────────────────── */
-        $result = $this->runWithSpinner(
-            label:   'git submodule add',
-            command: "git submodule add " . escapeshellarg($gitUrl) . " " . escapeshellarg($modulePath),
+        $result = $this->runStep(
+            bar:     $overall,
+            command: "git submodule add " . escapeshellarg($gitUrl) . " " . escapeshellarg($moduleRelPath),
+            cwd:     $projectRoot,
         );
 
         if ($result->failed()) {
-            $progress->finish('Aborted');
-            $this->alertError(
-                'git submodule add failed',
-                $result->meaningfulErrors()
-            );
+            $overall->finish('Aborted');
+            $this->alertError('git submodule add failed', $result->meaningfulErrors());
             return self::FAILURE;
         }
 
-        $progress->advance();
+        $overall->advance();
 
         /* ── Step 2: git submodule update ────────────────── */
-        $result = $this->runWithSpinner(
-            label:   'git submodule update --init --recursive',
+        $result = $this->runStep(
+            bar:     $overall,
             command: 'git submodule update --init --recursive',
+            cwd:     $projectRoot,
         );
 
         if ($result->failed()) {
-            $progress->finish('Aborted');
-            $this->alertError(
-                'Submodule initialisation failed',
-                $result->meaningfulErrors()
-            );
+            $overall->finish('Aborted');
+            $this->alertError('Submodule initialisation failed', $result->meaningfulErrors());
             return self::FAILURE;
         }
 
-        $progress->advance();
+        $overall->advance();
 
-        /* ── Step 3: scaffold src/ ────────────────────────── */
+        /* ── Step 3: scaffold src/ (pure PHP — no child process) ── */
         $srcPath = "{$modulePath}/src";
-
-        $spin = $this->spinner('Checking module structure');
-        $spin->start();
-        usleep(80_000);
-
-        if (!is_dir($srcPath)) {
-            if (!mkdir($srcPath, 0755, true)) {
-                $spin->fail("Could not create {$srcPath}");
-                $progress->finish('Aborted');
-                return self::FAILURE;
-            }
+        if (!is_dir($srcPath) && !mkdir($srcPath, 0755, true)) {
+            $overall->finish('Aborted');
+            $this->alertError("Could not create {$srcPath}", []);
+            return self::FAILURE;
         }
 
-        $spin->stop("src/ directory ready");
-        $progress->advance();
+        $overall->advance();
 
         /* ── Step 4: scaffold module composer.json ────────── */
         $moduleComposer = "{$modulePath}/composer.json";
-
-        $spin = $this->spinner('Scaffolding module composer.json');
-        $spin->start();
-        usleep(60_000);
 
         if (!is_file($moduleComposer)) {
             $composerData = [
                 'name'        => $packageName,
                 'description' => 'Auto-generated module',
                 'type'        => 'library',
-                'autoload'    => [
-                    'psr-4' => [
-                        "{$nsOrg}\\{$nsMod}\\" => 'src/',
-                    ],
-                ],
-                'require' => [
-                    'php' => '^8.2',
-                ],
+                'autoload'    => ['psr-4' => ["{$nsOrg}\\{$nsMod}\\" => 'src/']],
+                'require'           => ['php' => '^8.2'],
                 'minimum-stability' => 'dev',
                 'prefer-stable'     => true,
             ];
@@ -181,53 +167,44 @@ HELP;
             );
 
             if ($written === false) {
-                $spin->fail("Could not write {$moduleComposer}");
-                $progress->finish('Aborted');
+                $overall->finish('Aborted');
+                $this->alertError("Could not write {$moduleComposer}", []);
                 return self::FAILURE;
             }
-
-            $spin->stop("composer.json created");
-        } else {
-            $spin->stop("composer.json already present — skipped");
         }
 
-        $progress->advance();
+        $overall->advance();
 
         /* ── Step 5: patch root composer.json ────────────── */
-        $patchResult = $this->patchRootComposer($modulePath, $packageName);
+        $patchErr = $this->patchRootComposer($projectRoot, $moduleRelPath, $packageName);
 
-        if ($patchResult !== null) {
-            $progress->finish('Aborted');
-            $this->alertError('Failed to patch root composer.json', [$patchResult]);
+        if ($patchErr !== null) {
+            $overall->finish('Aborted');
+            $this->alertError('Failed to patch root composer.json', [$patchErr]);
             return self::FAILURE;
         }
 
-        $progress->advance();
+        $overall->advance();
 
         /* ── Step 6: composer update ──────────────────────── */
         $composerEnv = $offline ? ['COMPOSER_DISABLE_NETWORK' => '1'] : [];
-        $composerCmd = $offline
-            ? 'composer update --no-dev'
-            : 'composer update';
+        $composerCmd = $offline ? 'composer update --no-dev' : 'composer update';
 
-        $result = $this->runWithSpinner(
-            label:   $offline ? 'composer update (offline)' : 'composer update',
+        $result = $this->runStep(
+            bar:     $overall,
             command: $composerCmd,
             env:     $composerEnv,
-            style:   'arc',
+            cwd:     $projectRoot,
         );
 
         if ($result->failed()) {
-            $progress->finish('Aborted');
-            $this->alertError(
-                'composer update failed',
-                $result->meaningfulErrors()
-            );
+            $overall->finish('Aborted');
+            $this->alertError('composer update failed', $result->meaningfulErrors());
             return self::FAILURE;
         }
 
-        $progress->advance();
-        $progress->finish('All steps complete');
+        $overall->advance();
+        $overall->finish('All steps complete');
 
         /* ── Done ─────────────────────────────────────────── */
         $this->alertSuccess("Module '{$name}' added successfully", [
@@ -244,116 +221,79 @@ HELP;
     ========================================================= */
 
     /**
-     * Runs $command under a SpinnerComponent.
-     * The spinner's subLabel is continuously updated with the most recent
-     * output line so the user sees live progress without scrolling output.
-     */
-    private function runWithSpinner(
-        string $label,
-        string $command,
-        array  $env   = [],
-        string $style = 'dots',
-    ): ShellResult {
-        $spin = new SpinnerComponent($label, $style);
-        $spin->start();
-
-        $result = Shell::run(
-            $command,
-            tick: function (string $lastLine, bool $isStderr) use ($spin): void {
-                $spin->tick($lastLine !== '' ? Colors::muted($lastLine) : '');
-            },
-            env: $env,
-        );
-
-        return $result;
-    }
-
-    /**
-     * Check whether $modulePath is already registered in .gitmodules.
-     */
-    private function moduleExists(string $modulePath): bool
-    {
-        if (!is_file('.gitmodules')) {
-            return false;
-        }
-
-        return str_contains(
-            (string) file_get_contents('.gitmodules'),
-            "path = {$modulePath}"
-        );
-    }
-
-    /**
-     * Adds a path repository entry and a require entry to the root composer.json.
-     * Creates a .bak backup first, exactly as the bash script does.
+     * Run a shell command while keeping the existing ProgressBar animated.
      *
-     * @return string|null null on success, error message string on failure
+     * Shell::run() fires $tick on every ≤50 ms poll cycle. We call
+     * $bar->advance(0) which redraws the bar without moving $current forward —
+     * the bounce animation time-gates itself inside getBounceVisual() so rapid
+     * calls are harmless. No second ProgressBar is ever created.
      */
-    private function patchRootComposer(string $modulePath, string $packageName): ?string
+    private function runStep(
+        ProgressBar $bar,
+        string      $command,
+        array       $env = [],
+        string      $cwd = '',
+    ): ShellResult {
+        return Shell::run(
+            $command,
+            tick: fn() => $bar->advance(0),  // redraw only — does not increment $current
+            env:  $env,
+            cwd:  $cwd,
+        );
+    }
+
+    private function projectRoot(): string
     {
-        $spin = $this->spinner('Patching root composer.json');
-        $spin->start();
+        return dirname(__DIR__, 2);
+    }
 
-        $composerFile = 'composer.json';
+    private function moduleExists(string $projectRoot, string $moduleRelPath): bool
+    {
+        $file = "{$projectRoot}/.gitmodules";
+        return is_file($file) && str_contains((string) file_get_contents($file), "path = {$moduleRelPath}");
+    }
 
-        if (!is_file($composerFile)) {
-            $spin->fail('root composer.json not found');
-            return "File not found: {$composerFile}";
+    /**
+     * @return string|null null on success, error message on failure
+     */
+    private function patchRootComposer(string $projectRoot, string $moduleRelPath, string $packageName): ?string
+    {
+        $file = "{$projectRoot}/composer.json";
+
+        if (!is_file($file)) {
+            return "File not found: {$file}";
         }
 
-        $raw = file_get_contents($composerFile);
+        $raw = file_get_contents($file);
         if ($raw === false) {
-            $spin->fail('Cannot read composer.json');
-            return "Cannot read {$composerFile}";
+            return "Cannot read {$file}";
         }
 
         /** @var array<string, mixed>|null $data */
         $data = json_decode($raw, associative: true);
         if (!is_array($data)) {
-            $spin->fail('Invalid JSON in composer.json');
-            return "composer.json contains invalid JSON";
+            return "Invalid JSON in {$file}";
         }
 
-        // Backup (mirrors `cp composer.json composer.json.bak`)
-        file_put_contents("{$composerFile}.bak", $raw);
+        file_put_contents("{$file}.bak", $raw);
 
-        // De-duplicate then add the path repository (mirrors the jq logic)
         $repos = array_values(array_filter(
             (array) ($data['repositories'] ?? []),
-            fn ($r) => is_array($r) && ($r['url'] ?? '') !== $modulePath
+            fn ($r) => is_array($r) && ($r['url'] ?? '') !== $moduleRelPath
         ));
-        $repos[] = ['type' => 'path', 'url' => $modulePath];
+        $repos[]              = ['type' => 'path', 'url' => $moduleRelPath];
         $data['repositories'] = $repos;
 
-        // Add require entry
-        if (!isset($data['require'])) {
-            $data['require'] = [];
-        }
+        $data['require'] ??= [];
         $data['require'][$packageName] = '*';
 
-        $written = file_put_contents(
-            $composerFile,
-            json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL
-        );
-
-        if ($written === false) {
-            $spin->fail('Could not write composer.json');
-            return "Cannot write {$composerFile}";
+        if (file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL) === false) {
+            return "Cannot write {$file}";
         }
 
-        $spin->stop('root composer.json patched');
         return null;
     }
 
-    /**
-     * Convert kebab-case or snake_case to PascalCase.
-     * Mirrors: echo "$1" | sed -E 's/(^|-)([a-z])/\U\2/g'
-     *
-     * Examples:
-     *   user-auth    → UserAuth
-     *   my_org       → MyOrg
-     *   alfacode-team → AlfacodeTeam
-     */
     private function toPascalCase(string $value): string
     {
         return str_replace(' ', '', ucwords(str_replace(['-', '_'], ' ', $value)));
