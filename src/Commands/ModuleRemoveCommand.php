@@ -4,9 +4,7 @@ declare(strict_types=1);
 namespace AlfacodeTeam\PhpServicePlatform\Commands;
 
 use AlfacodeTeam\PhpIoCli\AbstractCommand;
-use AlfacodeTeam\PhpIoCli\Components\SpinnerComponent;
 use AlfacodeTeam\PhpIoCli\Components\TextInput;
-use AlfacodeTeam\PhpIoCli\Depends\Colors;
 use AlfacodeTeam\PhpIoCli\Depends\Shell;
 use AlfacodeTeam\PhpIoCli\Depends\ShellResult;
 
@@ -16,7 +14,7 @@ use AlfacodeTeam\PhpIoCli\Depends\ShellResult;
  * Usage:
  *   php cli module:remove <name>
  *
- * What it does (mirrors the bash script exactly, but with rich UI and safety gates):
+ * What it does:
  *   1. Shows a destruction manifest (Table)
  *   2. Asks for confirmation (Confirm)
  *   3. Asks the user to type the module name to double-confirm irreversible action
@@ -45,7 +43,7 @@ Example:
 HELP;
 
         $this->addArgument('name', 'Module name to remove (kebab-case)', required: true);
-        $this->addOption('--yes', '-y', 'Skip interactive confirmation prompts (for CI)');
+        $this->addOption('yes', 'y', 'Skip interactive confirmation prompts (for CI)');
     }
 
     /* =========================================================
@@ -54,69 +52,55 @@ HELP;
 
     protected function handle(): int
     {
-        $name       = (string) $this->argument('name');
-        $skipPrompt = $this->hasOption('yes');
-        $modulePath = "modules/{$name}";
+        $name        = (string) $this->argument('name');
+        $skipPrompt  = $this->hasOption('yes');
+        $projectRoot = $this->projectRoot();
+        $modulePath  = "modules/{$name}";
 
-        /* ── 1. Guard: does the module exist at all? ──────── */
-        if (!$this->moduleExists($modulePath)) {
-            $this->alertWarning(
-                'Module not found',
-                [
-                    "'{$modulePath}' is not registered in .gitmodules.",
-                    'Nothing to remove.',
-                ]
-            );
+        /* ── 1. Guard ─────────────────────────────────────── */
+        if (!$this->moduleExists($projectRoot, $modulePath)) {
+            $this->alertWarning('Module not found', [
+                "'{$modulePath}' is not registered in .gitmodules.",
+                'Nothing to remove.',
+            ]);
             return self::SUCCESS;
         }
 
         /* ── 2. Destruction manifest ──────────────────────── */
         $this->section('Module Removal Plan');
 
-        $willRemove = [
-            ['git submodule entry',    $modulePath],
-            ['git cache',              ".git/modules/{$modulePath}"],
-            ['module directory',       $modulePath],
-            ['.gitmodules section',    "submodule.{$modulePath}"],
-            ['root composer.json',     'repositories[] + require entry'],
-        ];
-
         $this->table()
             ->headers(['What', 'Target'])
             ->style('compact')
-            ->rows($willRemove)
+            ->rows([
+                ['git submodule entry', $modulePath],
+                ['git cache',           ".git/modules/{$modulePath}"],
+                ['module directory',    $modulePath],
+                ['.gitmodules section', "submodule.{$modulePath}"],
+                ['root composer.json',  'repositories[] + require entry'],
+            ])
             ->render();
 
-        $this->alertWarning(
-            'This action is irreversible',
-            [
-                'All files in the module directory will be deleted.',
-                'The git history of the submodule will remain in your remote.',
-            ]
-        );
+        $this->alertWarning('This action is irreversible', [
+            'All files in the module directory will be deleted.',
+            'The git history of the submodule will remain in your remote.',
+        ]);
 
-        /* ── 3. First confirmation ────────────────────────── */
+        /* ── 3. Confirmations ─────────────────────────────── */
         if (!$skipPrompt) {
             if (!$this->confirm('Are you sure you want to remove this module?', default: false)) {
                 $this->muted('Aborted.');
                 return self::SUCCESS;
             }
 
-            /* ── 4. Second gate: type the module name ─────── */
-            $this->newLine();
-            $this->line(
-                Colors::wrap('  Type the module name to confirm: ', Colors::BOLD)
-                . Colors::wrap($name, Colors::RED)
-            );
-            $this->newLine();
-
-            $typed = (new TextInput('Confirm module name'))
+            // FIX: embed the expected name directly in the TextInput question
+            // so it renders as a single coherent component instead of orphaned
+            // info()/muted() lines that bleed into the component's draw area.
+            $typed = (new TextInput("Type  '{$name}'  to confirm deletion"))
                 ->placeholder($name)
-                ->validate(function (string $v) use ($name): ?string {
-                    return $v === $name
-                        ? null
-                        : "You typed '{$v}', expected '{$name}'. Type it exactly to confirm.";
-                })
+                ->validate(fn (string $v) => $v === $name
+                    ? null
+                    : "Expected '{$name}', got '{$v}'. Type it exactly.")
                 ->run();
 
             if ((string) $typed !== $name) {
@@ -127,89 +111,93 @@ HELP;
 
         $this->newLine();
 
-        /* ── 5. Overall progress bar (5 steps) ───────────── */
-        $progress = $this->progressBar('Removing module', 5);
-        $progress->start();
+        /* ── 4. Single progress bar — one advance() per step ─
+         *
+         * FIX: only ONE ProgressBar instance draws at a time.
+         * Previously each runStep() created its own indeterminate bar while
+         * the outer determinate bar was also live — they tracked $lastLines
+         * independently and stomped on each other, producing the interleaved
+         * spinner frames seen in the output.
+         *
+         * Pattern: pass $overall to runStep() so it redraws the SAME bar on
+         * every Shell tick (bounce physics are time-gated, rapid calls safe).
+         * advance() is called once after the step completes, which moves the
+         * determinate fill forward.
+         * ──────────────────────────────────────────────────── */
+        $overall = $this->progressBar('Removing module', 5);
+        $overall->start();
 
         /* ── Step 1: git submodule deinit ─────────────────── */
-        $result = $this->runWithSpinner(
-            label:   'git submodule deinit',
+        $result = $this->runStep(
+            bar:     $overall,
             command: "git submodule deinit -f " . escapeshellarg($modulePath),
+            cwd:     $projectRoot,
         );
 
-        // deinit failing is non-fatal (module might already be partially removed)
         if ($result->failed()) {
-            $this->warning(
-                'git submodule deinit reported errors (continuing): '
-                . implode(' ', $result->meaningfulErrors())
-            );
-        } else {
-            // Only print the stop message when the spinner was properly started
+            // Non-fatal — module may already be partially removed.
+            $this->warning('git submodule deinit: ' . implode(' ', $result->meaningfulErrors()));
         }
 
-        $progress->advance();
+        $overall->advance();
 
         /* ── Step 2: git rm ───────────────────────────────── */
-        $result = $this->runWithSpinner(
-            label:   'git rm',
+        $result = $this->runStep(
+            bar:     $overall,
             command: "git rm -f " . escapeshellarg($modulePath),
+            cwd:     $projectRoot,
         );
 
         if ($result->failed()) {
-            $this->warning(
-                'git rm reported errors (continuing): '
-                . implode(' ', $result->meaningfulErrors())
-            );
+            $this->warning('git rm: ' . implode(' ', $result->meaningfulErrors()));
         }
 
-        $progress->advance();
+        $overall->advance();
 
-        /* ── Step 3: remove .git/modules cache ────────────── */
-        $spin = $this->spinner('Removing .git/modules cache');
-        $spin->start();
-        usleep(60_000);
-
-        $gitModulesCache = ".git/modules/{$modulePath}";
+        /* ── Step 3: remove .git/modules cache + working tree
+         *
+         * Pure PHP — no child process, so no Shell tick needed.
+         * Just do the work; the bar redraws on the next advance().
+         * ──────────────────────────────────────────────────── */
+        $gitModulesCache = "{$projectRoot}/.git/modules/{$modulePath}";
         if (is_dir($gitModulesCache)) {
             $this->removeDirectory($gitModulesCache);
         }
 
-        // Also remove any leftover working-tree directory
-        if (is_dir($modulePath)) {
-            $this->removeDirectory($modulePath);
+        $absModulePath = "{$projectRoot}/{$modulePath}";
+        if (is_dir($absModulePath)) {
+            $this->removeDirectory($absModulePath);
         }
 
-        $spin->stop('Cache and working-tree directory removed');
-        $progress->advance();
+        $overall->advance();
 
-        /* ── Step 4: clean .gitmodules ────────────────────── */
-        $patchErr = $this->cleanGitmodules($modulePath);
-        if ($patchErr !== null) {
-            $this->warning("Could not clean .gitmodules: {$patchErr}");
+        /* ── Step 4: clean .gitmodules + root composer.json ── */
+        $err = $this->cleanGitmodules($projectRoot, $modulePath);
+        if ($err !== null) {
+            $this->warning("Could not clean .gitmodules: {$err}");
         }
 
-        $patchErr = $this->unpatchRootComposer($modulePath, $name);
-        if ($patchErr !== null) {
-            $this->warning("Could not clean root composer.json: {$patchErr}");
+        $err = $this->unpatchRootComposer($projectRoot, $modulePath, $name);
+        if ($err !== null) {
+            $this->warning("Could not clean root composer.json: {$err}");
         }
 
-        $progress->advance();
+        $overall->advance();
 
         /* ── Step 5: git commit ───────────────────────────── */
-        $result = $this->runWithSpinner(
-            label:   'git commit',
+        $result = $this->runStep(
+            bar:     $overall,
             command: "git commit -m " . escapeshellarg("remove module {$name}"),
+            cwd:     $projectRoot,
         );
 
+        // Non-fatal: "nothing to commit" exits non-zero on some git versions.
         if ($result->failed()) {
-            $this->warning(
-                'git commit failed (you may need to commit manually): '
-                . implode(' ', $result->meaningfulErrors())
-            );
+            $this->warning('git commit: ' . implode(' ', $result->meaningfulErrors()));
         }
 
-        $progress->advance();
-        $progress->finish('Removal complete');
+        $overall->advance();
+        $overall->finish("Module '{$name}' removed");
 
         /* ── Done ─────────────────────────────────────────── */
         $this->alertSuccess("Module '{$name}' removed", [
@@ -224,135 +212,89 @@ HELP;
        HELPERS
     ========================================================= */
 
-    private function runWithSpinner(
-        string $label,
+    /**
+     * Run a shell command while ticking an EXISTING ProgressBar.
+     *
+     * Accepts the live $bar by reference so that Shell::run()'s 50 ms tick
+     * redraws the very same bar that advance() will later move forward.
+     * No second ProgressBar is created — one bar owns the terminal at all times.
+     */
+    private function runStep(
+        \AlfacodeTeam\PhpIoCli\Components\ProgressBar $bar,
         string $command,
-        array  $env   = [],
-        string $style = 'dots',
+        array  $env = [],
+        string $cwd = '',
     ): ShellResult {
-        $spin = new SpinnerComponent($label, $style);
-        $spin->start();
-
-        $result = Shell::run(
+        return Shell::run(
             $command,
-            tick: function (string $lastLine, bool $isStderr) use ($spin): void {
-                $spin->tick($lastLine !== '' ? Colors::muted($lastLine) : '');
-            },
-            env: $env,
+            tick: fn() => $bar->advance(0),  // redraw without incrementing current
+            env:  $env,
+            cwd:  $cwd,
         );
-
-        if ($result->ok()) {
-            $spin->stop($label);
-        } else {
-            $spin->fail($label . ' (errors reported)');
-        }
-
-        return $result;
     }
 
-    /**
-     * Removes a [submodule "modules/<name>"] section from .gitmodules.
-     * Pure PHP replacement for:
-     *   git config -f .gitmodules --remove-section "submodule.$MODULE_PATH"
-     *
-     * @return string|null null on success, error message on failure
-     */
-    private function cleanGitmodules(string $modulePath): ?string
+    private function cleanGitmodules(string $projectRoot, string $modulePath): ?string
     {
-        $spin = $this->spinner('Cleaning .gitmodules');
-        $spin->start();
-        usleep(60_000);
+        $file = "{$projectRoot}/.gitmodules";
 
-        if (!is_file('.gitmodules')) {
-            $spin->stop('.gitmodules not found — nothing to clean');
+        if (!is_file($file)) {
             return null;
         }
 
-        $content = file_get_contents('.gitmodules');
+        $content = file_get_contents($file);
         if ($content === false) {
-            $spin->fail('Cannot read .gitmodules');
             return 'Cannot read .gitmodules';
         }
 
-        // Remove the INI section block for this submodule.
-        // Pattern matches: [submodule "modules/name"] + all key=value lines until the next [section] or EOF
-        $sectionHeader = preg_quote("[submodule \"{$modulePath}\"]", '/');
-        $cleaned = preg_replace(
-            "/^{$sectionHeader}\s*\n(?:(?!\[)[^\n]*\n)*/m",
-            '',
-            $content
-        );
+        $header  = preg_quote("[submodule \"{$modulePath}\"]", '/');
+        $cleaned = preg_replace("/^{$header}\s*\n(?:(?!\[)[^\n]*\n)*/m", '', $content);
 
         if ($cleaned === null || $cleaned === $content) {
-            // Section was not found — not necessarily an error
-            $spin->stop('.gitmodules: section not found, skipped');
-            return null;
+            return null;  // section not present — nothing to do
         }
 
-        $written = file_put_contents('.gitmodules', $cleaned);
-        if ($written === false) {
-            $spin->fail('Cannot write .gitmodules');
+        if (file_put_contents($file, $cleaned) === false) {
             return 'Cannot write .gitmodules';
         }
 
-        // Stage the change
-        Shell::run('git add .gitmodules');
-        $spin->stop('.gitmodules cleaned');
+        Shell::run('git add ' . escapeshellarg($file), cwd: $projectRoot);
         return null;
     }
 
-    /**
-     * Removes the path repository entry and require key for this module
-     * from the root composer.json.
-     *
-     * @return string|null null on success, error message on failure
-     */
-    private function unpatchRootComposer(string $modulePath, string $moduleName): ?string
+    private function unpatchRootComposer(string $projectRoot, string $modulePath, string $moduleName): ?string
     {
-        $spin = $this->spinner('Cleaning root composer.json');
-        $spin->start();
-        usleep(60_000);
+        $file = "{$projectRoot}/composer.json";
 
-        $composerFile = 'composer.json';
-
-        if (!is_file($composerFile)) {
-            $spin->stop('root composer.json not found — skipped');
+        if (!is_file($file)) {
             return null;
         }
 
-        $raw = file_get_contents($composerFile);
+        $raw = file_get_contents($file);
         if ($raw === false) {
-            $spin->fail('Cannot read composer.json');
-            return "Cannot read {$composerFile}";
+            return "Cannot read {$file}";
         }
 
         /** @var array<string, mixed>|null $data */
         $data = json_decode($raw, associative: true);
         if (!is_array($data)) {
-            $spin->fail('Invalid JSON in composer.json');
-            return "Invalid JSON in {$composerFile}";
+            return "Invalid JSON in {$file}";
         }
 
-        // Backup
-        file_put_contents("{$composerFile}.bak", $raw);
+        file_put_contents("{$file}.bak", $raw);
 
-        // Remove path repository
         if (isset($data['repositories'])) {
             $data['repositories'] = array_values(array_filter(
                 (array) $data['repositories'],
                 fn ($r) => is_array($r) && ($r['url'] ?? '') !== $modulePath
             ));
 
-            // Clean up empty repositories array
             if (empty($data['repositories'])) {
                 unset($data['repositories']);
             }
         }
 
-        // Remove require entry — try both "org/name" patterns across any org
         if (isset($data['require'])) {
             foreach (array_keys($data['require']) as $pkg) {
-                // Match any package whose name segment matches the module name
                 if (str_ends_with((string) $pkg, "/{$moduleName}")) {
                     unset($data['require'][$pkg]);
                     break;
@@ -360,39 +302,24 @@ HELP;
             }
         }
 
-        $written = file_put_contents(
-            $composerFile,
-            json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL
-        );
-
-        if ($written === false) {
-            $spin->fail('Cannot write composer.json');
-            return "Cannot write {$composerFile}";
+        if (file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL) === false) {
+            return "Cannot write {$file}";
         }
 
-        $spin->stop('root composer.json cleaned');
         return null;
     }
 
-    /**
-     * Check whether $modulePath is registered in .gitmodules.
-     */
-    private function moduleExists(string $modulePath): bool
+    private function moduleExists(string $projectRoot, string $modulePath): bool
     {
-        if (!is_file('.gitmodules')) {
-            return false;
-        }
-
-        return str_contains(
-            (string) file_get_contents('.gitmodules'),
-            "path = {$modulePath}"
-        );
+        $file = "{$projectRoot}/.gitmodules";
+        return is_file($file) && str_contains((string) file_get_contents($file), "path = {$modulePath}");
     }
 
-    /**
-     * Recursively delete a directory (PHP equivalent of rm -rf).
-     * Works on Linux, macOS, and Windows.
-     */
+    private function projectRoot(): string
+    {
+        return dirname(__DIR__, 2);
+    }
+
     private function removeDirectory(string $path): void
     {
         if (!is_dir($path)) {
@@ -405,11 +332,7 @@ HELP;
         );
 
         foreach ($items as $item) {
-            if ($item->isDir() && !$item->isLink()) {
-                rmdir($item->getRealPath());
-            } else {
-                unlink($item->getRealPath());
-            }
+            $item->isDir() && !$item->isLink() ? rmdir($item->getRealPath()) : unlink($item->getRealPath());
         }
 
         rmdir($path);
