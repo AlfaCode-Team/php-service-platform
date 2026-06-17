@@ -1,0 +1,96 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Project\Bootstrap;
+
+use Project\Bootstrap\Domain\DomainContext;
+use Project\Bootstrap\Domain\DomainResolver;
+
+/**
+ * EntryHelpers — pure helpers shared by every HTTP entry point.
+ *
+ * Picks the active project (from the resolved DomainContext, then HKM_PROJECT,
+ * then 'admin') and resolves the bootstrap file path for it. Returns null
+ * project context if no Host header is available (CLI), which lets the
+ * caller decide its fallback policy.
+ */
+final class EntryHelpers
+{
+    /**
+     * Resolve the project bootstrap file path for the given $project under $rootPath.
+     * Falls back to the legacy bootstrap/app.php shim when the project bootstrap is missing.
+     */
+    public static function bootstrapPathFor(string $rootPath, string $project): string
+    {
+        $rootPath = rtrim($rootPath, '/');
+        $project  = self::sanitiseProject($project);
+        $candidate = $rootPath . '/projects/' . $project . '/bootstrap/app.php';
+
+        return is_file($candidate) ? $candidate : $rootPath . '/bootstrap/app.php';
+    }
+
+    /**
+     * Resolve the bootstrap path honouring a resolved DomainContext.
+     *
+     * When the host matched a project REGISTERED with an external absolute path
+     * (a flat standalone project created with `psp new`), boot that project's
+     * own bootstrap:
+     *   - flat layout:   <projectPath>/app/bootstrap/app.php
+     *   - nested layout: <projectPath>/bootstrap/app.php
+     * Otherwise fall back to the in-repo lookup (bootstrapPathFor).
+     */
+    public static function bootstrapPathForContext(?DomainContext $ctx, string $rootPath, string $project): string
+    {
+        if ($ctx !== null && !$ctx->isPlatformOnly()) {
+            $path = rtrim($ctx->projectPath, '/');
+            // Only treat as external when it lives outside <root>/projects/.
+            $inRepo = $path === rtrim($rootPath, '/') . '/projects/' . self::sanitiseProject($ctx->name);
+            if (!$inRepo) {
+                foreach (['/app/bootstrap/app.php', '/bootstrap/app.php'] as $rel) {
+                    if (is_file($path . $rel)) {
+                        return $path . $rel;
+                    }
+                }
+            }
+        }
+
+        return self::bootstrapPathFor($rootPath, $project);
+    }
+
+    /**
+     * Resolve the active project name in priority order:
+     *   1. DomainContext->name (when a host matched a project in projects.json)
+     *   2. HKM_PROJECT env var
+     *   3. 'admin' (legacy default)
+     */
+    public static function projectFromContext(?DomainContext $ctx): string
+    {
+        if ($ctx !== null && !$ctx->isPlatformOnly()) {
+            return self::sanitiseProject($ctx->name);
+        }
+        $env = (string) (getenv('HKM_PROJECT') ?: '');
+        return self::sanitiseProject($env !== '' ? $env : 'admin');
+    }
+
+    /**
+     * Resolve the DomainContext for an HTTP host, or null when no host is given
+     * (CLI / worker contexts). Never throws — returns null on any registry error.
+     */
+    public static function resolveDomain(string $rootPath, ?string $host): ?DomainContext
+    {
+        if ($host === null || trim($host) === '') {
+            return null;
+        }
+        return DomainResolver::resolve($rootPath, $host);
+    }
+
+    private static function sanitiseProject(string $project): string
+    {
+        $project = trim($project);
+        if ($project === '' || preg_match('/^[a-zA-Z0-9_\-]+$/', $project) !== 1) {
+            return 'admin';
+        }
+        return $project;
+    }
+}

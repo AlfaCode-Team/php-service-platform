@@ -1,0 +1,163 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+use AlfacodeTeam\PhpServicePlatform\System\GlobalKernelProjectScaffolder;
+
+$autoload = __DIR__ . '/../vendor/autoload.php';
+if (!is_file($autoload)) {
+    fwrite(STDERR, "[psp] vendor/autoload.php not found. Run composer install.\n");
+    exit(1);
+}
+require_once $autoload;
+
+$args = $argv;
+array_shift($args);
+$command = $args[0] ?? 'help';
+
+$printHelp = static function (): void {
+    echo "PhpServicePlatform Global CLI\n";
+    echo "\n";
+    echo "Usage:\n";
+    echo "  psp new <path> [options]   Create a project anywhere using the system kernel\n";
+    echo "      --project=<name>         Project name (default: admin)\n";
+    echo "      --domains=a.com,b.com    Domains the project answers to (also written to proj.json)\n";
+    echo "      --admin-sub=app,admin    Subdomain labels mapped to the 'admin' face (platform.json)\n";
+    echo "      --api-sub=api            Subdomain labels mapped to the 'api' face (platform.json)\n";
+    echo "      --no-register            Do NOT register in the kernel projects.json/platform.json\n";
+    echo "  psp doctor                 Show global autoload detection info\n";
+    echo "  psp help                   Show this help\n";
+    echo "\n";
+    echo "Registry dir: PSP_PROJECTS_DIR (default: <kernel-root>/projects)\n";
+};
+
+$resolveGlobalAutoloadCandidates = static function (): array {
+    $candidates = [];
+
+    $explicit = getenv('PSP_GLOBAL_AUTOLOAD');
+    if (is_string($explicit) && $explicit !== '') {
+        $candidates[] = $explicit;
+    }
+
+    $composerHome = getenv('COMPOSER_HOME');
+    if (is_string($composerHome) && $composerHome !== '') {
+        $candidates[] = rtrim($composerHome, '/\\') . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+    }
+
+    $home = getenv('HOME');
+    if (is_string($home) && $home !== '') {
+        $home = rtrim($home, '/\\');
+        $candidates[] = $home . '/.config/composer/vendor/autoload.php';
+        $candidates[] = $home . '/.composer/vendor/autoload.php';
+    }
+
+    $appData = getenv('APPDATA');
+    if (is_string($appData) && $appData !== '') {
+        $candidates[] = rtrim($appData, '/\\') . DIRECTORY_SEPARATOR . 'Composer' . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+    }
+
+    $userProfile = getenv('USERPROFILE');
+    if (is_string($userProfile) && $userProfile !== '') {
+        $candidates[] = rtrim($userProfile, '/\\') . DIRECTORY_SEPARATOR . '.composer' . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+    }
+
+    return array_values(array_unique($candidates));
+};
+
+switch ($command) {
+    case 'help':
+    case '--help':
+    case '-h':
+        $printHelp();
+        exit(0);
+
+    case 'doctor':
+        echo "[psp] Doctor\n\n";
+        echo "Kernel class loaded (current package): "
+            . (class_exists(\AlfacodeTeam\PhpServicePlatform\Kernel\Kernel::class) ? 'yes' : 'no') . "\n\n";
+
+        echo "Global autoload candidates:\n";
+        foreach ($resolveGlobalAutoloadCandidates() as $candidate) {
+            $ok = is_file($candidate) ? 'found' : 'missing';
+            echo " - {$candidate} [{$ok}]\n";
+        }
+
+        echo "\nTip: set PSP_GLOBAL_AUTOLOAD to force a path.\n";
+        exit(0);
+
+    case 'new':
+        $target = $args[1] ?? null;
+        if ($target === null || trim($target) === '') {
+            fwrite(STDERR, "[psp] Missing target path. Example: psp new /path/to/project\n");
+            exit(2);
+        }
+
+        $projectName = 'admin';
+        $domains     = [];
+        $adminSubs   = [];
+        $apiSubs     = [];
+        $noRegister  = false;
+
+        $splitCsv = static function (string $csv): array {
+            return array_values(array_filter(array_map('trim', explode(',', $csv)), static fn(string $v): bool => $v !== ''));
+        };
+
+        foreach ($args as $arg) {
+            if (str_starts_with($arg, '--project=')) {
+                $projectName = (string) substr($arg, strlen('--project='));
+            } elseif (str_starts_with($arg, '--domains=')) {
+                $domains = $splitCsv((string) substr($arg, strlen('--domains=')));
+            } elseif (str_starts_with($arg, '--admin-sub=')) {
+                $adminSubs = $splitCsv((string) substr($arg, strlen('--admin-sub=')));
+            } elseif (str_starts_with($arg, '--api-sub=')) {
+                $apiSubs = $splitCsv((string) substr($arg, strlen('--api-sub=')));
+            } elseif ($arg === '--no-register') {
+                $noRegister = true;
+            }
+        }
+
+        // Kernel registry directory: where projects.json / platform.json live.
+        // Override with PSP_PROJECTS_DIR; otherwise the kernel package's own
+        // projects/ folder (this script lives in <kernel-root>/bin/psp).
+        $kernelProjectsDir = getenv('PSP_PROJECTS_DIR');
+        if (!is_string($kernelProjectsDir) || $kernelProjectsDir === '') {
+            $kernelProjectsDir = dirname(__DIR__) . '/projects';
+        }
+
+        try {
+            $scaffolder = new GlobalKernelProjectScaffolder();
+            $scaffolder->create($target, $projectName, $domains);
+
+            $absTarget = realpath($target) ?: $target;
+
+            if (!$noRegister) {
+                $written = $scaffolder->registerInKernel(
+                    $kernelProjectsDir,
+                    $projectName,
+                    $absTarget,
+                    $domains,
+                    $adminSubs,
+                    $apiSubs,
+                );
+            }
+        } catch (Throwable $e) {
+            fwrite(STDERR, "[psp] " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+        echo "[psp] Project created at: {$target}\n";
+        echo "[psp] Project bootstrap: app/bootstrap/app.php\n";
+        if (!$noRegister) {
+            echo "[psp] Registered '{$projectName}' in kernel registry: {$kernelProjectsDir}\n";
+            echo "[psp]   projects.json: " . ($written['projects'] ?? '') . "\n";
+            echo "[psp]   platform.json: " . ($written['platform'] ?? '') . "\n";
+            echo "[psp]   domains: " . ($domains === [] ? '(none — add with --domains=a.com,b.com)' : implode(', ', $domains)) . "\n";
+        }
+        echo "[psp] Next: php {$target}/app/cli/run.php list\n";
+        exit(0);
+
+    default:
+        fwrite(STDERR, "[psp] Unknown command: {$command}\n\n");
+        $printHelp();
+        exit(2);
+}
