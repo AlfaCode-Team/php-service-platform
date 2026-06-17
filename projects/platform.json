@@ -1,0 +1,11 @@
+{
+    "subdomains": {
+        "admin": [
+            "app",
+            "admin"
+        ],
+        "api": [
+            "api"
+        ]
+    }
+}

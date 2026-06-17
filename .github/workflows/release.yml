@@ -1,0 +1,267 @@
+name: Release
+
+"on":
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Linux: build .deb  (amd64)
+  # ──────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux .deb
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: "0.17.0-dev.657+2faf8debf"
+
+      - name: Set up PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction
+
+      - name: Build Zig launcher (Linux x86_64)
+        working-directory: tools/psp-launcher-zig
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu
+
+      - name: Assemble .deb package tree
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="psp-kernel_${VERSION}_amd64"
+          PKGDIR="dist/${PKG}"
+
+          mkdir -p "${PKGDIR}/DEBIAN"
+          mkdir -p "${PKGDIR}/opt/psp-kernel/bin"
+          mkdir -p "${PKGDIR}/opt/psp-kernel/src"
+          mkdir -p "${PKGDIR}/opt/psp-kernel/vendor"
+          mkdir -p "${PKGDIR}/usr/bin"
+
+          # Kernel PHP source + vendor
+          cp -r src/         "${PKGDIR}/opt/psp-kernel/"
+          cp -r vendor/      "${PKGDIR}/opt/psp-kernel/"
+          cp    composer.json "${PKGDIR}/opt/psp-kernel/"
+          cp    README.md     "${PKGDIR}/opt/psp-kernel/" 2>/dev/null || true
+          cp    LICENSE       "${PKGDIR}/opt/psp-kernel/" 2>/dev/null || true
+
+          # PHP CLI script (what the Zig launcher invokes via php …)
+          cp bin/psp "${PKGDIR}/opt/psp-kernel/bin/psp"
+          chmod +x   "${PKGDIR}/opt/psp-kernel/bin/psp"
+
+          # Zig launcher and config tool → /usr/bin (user-facing)
+          cp tools/psp-launcher-zig/zig-out/bin/psp        "${PKGDIR}/usr/bin/psp"
+          cp tools/psp-launcher-zig/zig-out/bin/psp-config "${PKGDIR}/usr/bin/psp-config"
+          chmod +x "${PKGDIR}/usr/bin/psp"
+          chmod +x "${PKGDIR}/usr/bin/psp-config"
+
+          # DEBIAN/control
+          cat > "${PKGDIR}/DEBIAN/control" <<EOF
+          Package: psp-kernel
+          Version: ${VERSION}
+          Architecture: amd64
+          Maintainer: HKM Team <dev@hkm.local>
+          Depends: php-cli (>= 8.2), ca-certificates
+          Description: PhpServicePlatform kernel and launcher
+           Installs the kernel PHP runtime under /opt/psp-kernel and places
+           a native psp launcher in /usr/bin so projects can live anywhere.
+          EOF
+
+          dpkg-deb --build "${PKGDIR}"
+          echo "PKG_NAME=${PKG}.deb" >> "$GITHUB_ENV"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: dist/*.deb
+
+  # ──────────────────────────────────────────────────────────────
+  # Windows: cross-compile .exe bundle  (x86_64)
+  # ──────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build Windows .zip
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: "0.17.0-dev.657+2faf8debf"
+
+      - name: Set up PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction
+
+      - name: Cross-compile Zig launcher (Windows x86_64)
+        working-directory: tools/psp-launcher-zig
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu
+
+      - name: Assemble Windows bundle
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUNDLE="dist/psp-kernel-win"
+
+          mkdir -p "${BUNDLE}/psp-kernel/bin"
+          mkdir -p "${BUNDLE}/psp-kernel/src"
+          mkdir -p "${BUNDLE}/psp-kernel/vendor"
+
+          cp -r src/          "${BUNDLE}/psp-kernel/"
+          cp -r vendor/       "${BUNDLE}/psp-kernel/"
+          cp    composer.json  "${BUNDLE}/psp-kernel/"
+          cp    README.md      "${BUNDLE}/psp-kernel/" 2>/dev/null || true
+          cp    LICENSE        "${BUNDLE}/psp-kernel/" 2>/dev/null || true
+          cp    bin/psp        "${BUNDLE}/psp-kernel/bin/psp"
+
+          # Zig .exe files at root of bundle (add to PATH manually or via installer)
+          cp tools/psp-launcher-zig/zig-out/bin/psp.exe        "${BUNDLE}/psp.exe"
+          cp tools/psp-launcher-zig/zig-out/bin/psp-config.exe "${BUNDLE}/psp-config.exe"
+
+          # README for Windows users
+          cat > "${BUNDLE}/INSTALL.txt" <<'EOF'
+          PSP Kernel — Windows Installation
+          ==================================
+          1. Extract this folder to C:\psp-kernel\ (or any path).
+          2. Set PSP_KERNEL_HOME=C:\psp-kernel\psp-kernel in System env vars.
+          3. Add the folder containing psp.exe to your PATH.
+          4. Run: psp help
+          EOF
+
+          cd dist
+          zip -r "psp-kernel-${VERSION}-windows-x86_64.zip" psp-kernel-win/
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: dist/*.zip
+
+  # ──────────────────────────────────────────────────────────────
+  # macOS: universal binary + .app bundle  (arm64 + x86_64)
+  # ──────────────────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS .app
+    runs-on: macos-14  # Apple Silicon runner
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: "0.17.0-dev.657+2faf8debf"
+
+      - name: Set up PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction
+
+      - name: Build Zig launcher (arm64)
+        working-directory: tools/psp-launcher-zig
+        run: |
+          zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos
+          cp zig-out/bin/psp        zig-out/bin/psp-arm64
+          cp zig-out/bin/psp-config zig-out/bin/psp-config-arm64
+
+      - name: Build Zig launcher (x86_64)
+        working-directory: tools/psp-launcher-zig
+        run: |
+          zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-macos
+          cp zig-out/bin/psp        zig-out/bin/psp-x86_64
+          cp zig-out/bin/psp-config zig-out/bin/psp-config-x86_64
+
+      - name: Create universal binaries
+        working-directory: tools/psp-launcher-zig
+        run: |
+          lipo -create zig-out/bin/psp-arm64        zig-out/bin/psp-x86_64        -output zig-out/bin/psp-universal
+          lipo -create zig-out/bin/psp-config-arm64 zig-out/bin/psp-config-x86_64 -output zig-out/bin/psp-config-universal
+
+      - name: Assemble macOS .app bundle
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP="dist/PSP.app"
+
+          mkdir -p "${APP}/Contents/MacOS"
+          mkdir -p "${APP}/Contents/Resources/opt/psp-kernel/bin"
+
+          cp -r src/          "${APP}/Contents/Resources/opt/psp-kernel/"
+          cp -r vendor/       "${APP}/Contents/Resources/opt/psp-kernel/"
+          cp    composer.json  "${APP}/Contents/Resources/opt/psp-kernel/"
+          cp    README.md      "${APP}/Contents/Resources/opt/psp-kernel/" 2>/dev/null || true
+          cp    LICENSE        "${APP}/Contents/Resources/opt/psp-kernel/" 2>/dev/null || true
+          cp    bin/psp        "${APP}/Contents/Resources/opt/psp-kernel/bin/psp"
+
+          cp tools/psp-launcher-zig/zig-out/bin/psp-universal        "${APP}/Contents/MacOS/psp"
+          cp tools/psp-launcher-zig/zig-out/bin/psp-config-universal "${APP}/Contents/MacOS/psp-config"
+          chmod +x "${APP}/Contents/MacOS/psp" "${APP}/Contents/MacOS/psp-config"
+
+          cat > "${APP}/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>PSP</string>
+            <key>CFBundleExecutable</key><string>psp</string>
+            <key>CFBundleIdentifier</key><string>team.alfacode.psp-kernel</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+          </dict>
+          </plist>
+          EOF
+
+          cd dist
+          tar -czf "psp-kernel-${VERSION}-macos-universal.tar.gz" PSP.app/
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: dist/*.tar.gz
+
+  # ──────────────────────────────────────────────────────────────
+  # GitHub Release: attach all artifacts
+  # ──────────────────────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/linux-deb/*.deb
+            artifacts/windows-zip/*.zip
+            artifacts/macos-app/*.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

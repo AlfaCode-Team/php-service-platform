@@ -1,0 +1,19 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Plugins\Voting\Domain\Events;
+
+use AlfacodeTeam\PhpServicePlatform\Kernel\Events\Contracts\DomainEventContract;
+use Plugins\Voting\Domain\ValueObjects\ContestantId;
+use Plugins\Voting\Domain\ValueObjects\EditionId;
+
+final readonly class VoteCastDomainEvent implements DomainEventContract
+{
+    public function __construct(
+        public readonly ContestantId       $contestantId,
+        public readonly EditionId          $editionId,
+        public readonly string             $userId,
+        public readonly \DateTimeImmutable $occurredAt,
+    ) {}
+}
