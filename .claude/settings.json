@@ -1,0 +1,51 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git rm *)",
+      "Bash(php app/cli/run.php list)",
+      "Bash(composer dump-autoload *)",
+      "Bash(php app/cli/run.php help module:add)",
+      "Bash(php app/cli/run.php migrate:status --help)",
+      "Bash(php app/cli/run.php migrate:status --config=config/let-migrate.php)",
+      "Bash(cat)",
+      "Read(//tmp/**)",
+      "Bash(cat > *)",
+      "Bash(APP_ENV=local php app/cli/run.php migrate:status)",
+      "Bash(php app/cli/run.php migrate:status --config=config/environments/local.php)",
+      "Bash(php -r ' *)",
+      "Bash(php app/cli/run.php --help)",
+      "Bash(php app/cli/run.php migrate:status)",
+      "Bash(APP_ENV=local php app/cli/run.php list)",
+      "Bash(APP_ENV=local php app/cli/run.php migrate:status --config=config/environments/local.php)",
+      "Bash(php -r 'echo realpath\\(\"config/environments/../database/migrations\"\\) . \"\\\\n\";')",
+      "Bash(xargs -I {} basename {})",
+      "Bash(php -v)",
+      "Bash(vendor/bin/phpunit tests/Unit/Database)",
+      "Bash(timeout 90 vendor/bin/phpstan analyse plugins/Database --level=5 --no-progress)",
+      "Bash(vendor/bin/phpunit)",
+      "Bash(php -r 'require '\\\\''vendor/autoload.php'\\\\''; $b = require '\\\\''app/bootstrap/base.php'\\\\''; echo '\\\\''base.php OK: '\\\\''.get_class\\($b\\).PHP_EOL;')",
+      "Bash(php -m)",
+      "Bash(timeout 120 vendor/bin/phpstan analyse plugins/Database --level=5 --no-progress)",
+      "Bash(php -r 'require '\\\\''vendor/autoload.php'\\\\''; $b=require '\\\\''app/bootstrap/base.php'\\\\''; echo '\\\\''OK '\\\\''.get_class\\($b\\).PHP_EOL;')",
+      "Bash(DB_POOL_ENABLED=true DB_DRIVER=sqlite DB_DATABASE=:memory: DB_POOL_MIN=1 php -r 'require '\\\\''vendor/autoload.php'\\\\''; $b=require '\\\\''app/bootstrap/base.php'\\\\''; echo '\\\\''OK pool wired'\\\\''.PHP_EOL;')",
+      "Bash(python3 -c \"import json;d=json.load\\(open\\('composer.json'\\)\\);print\\(json.dumps\\(d.get\\('autoload',{}\\),indent=1\\)\\)\")",
+      "Bash(python3 -c \"import json;d=json.load\\(open\\('composer.json'\\)\\);print\\(json.dumps\\({**d.get\\('require',{}\\),**d.get\\('require-dev',{}\\)},indent=1\\)\\)\")",
+      "Bash(cd /home/home/Documents/HKMCODE/plugins/Authorization/Engine *)",
+      "Bash(grep -nE 'policy|class Assertion|public \\\\$policy' Model/Assertion.php)",
+      "Bash(composer require *)",
+      "Bash(grep -nE 'getContainer|->container|getDefaultDriver|buildProvider|formatRedirectUrl|config\\\\\\(|\\\\$this->app' SocialiteManager.php)",
+      "Bash(sed -n '1,32p' SocialiteManager.php)",
+      "Bash(sed -n '270,285p' SocialiteManager.php)",
+      "Bash(sed -n '100,180p' HmacSigned.php)",
+      "Bash(sed -n '110,180p' ApiRateLimit.php)",
+      "Bash(sed -n '90,140p' Shield.php)",
+      "Bash(sed -n '1,40p' src/Kernel/Security/SecurityVerdict.php)",
+      "Bash(sed -n '8,33p' src/Kernel/Security/Identity.php)",
+      "Bash(php -l plugins/Authorization/Infrastructure/Persistence/DatabasePolicyAdapter.php)"
+    ],
+    "additionalDirectories": [
+      "/tmp",
+      "/home/home/Documents/HKMCODE/plugins/Authorization/Engine"
+    ]
+  }
+}

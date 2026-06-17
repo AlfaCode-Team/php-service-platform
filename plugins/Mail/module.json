@@ -1,0 +1,24 @@
+{
+    "name": "mail",
+    "version": "1.0.0",
+    "solves": "mail.smtp",
+    "type": "module",
+
+    "requires": [],
+    "exposes": ["AlfacodeTeam\\PhpServicePlatform\\Kernel\\Ports\\MailPort"],
+
+    "routes": [],
+    "emits": [],
+    "listens": [],
+
+    "config": [
+        { "key": "SMTP_HOST",         "type": "string", "required": false },
+        { "key": "SMTP_PORT",         "type": "int",    "required": false },
+        { "key": "SMTP_USERNAME",     "type": "string", "required": false },
+        { "key": "SMTP_PASSWORD",     "type": "string", "required": false },
+        { "key": "SMTP_ENCRYPTION",   "type": "string", "required": false },
+        { "key": "MAIL_FROM_ADDRESS", "type": "string", "required": false },
+        { "key": "MAIL_FROM_NAME",    "type": "string", "required": false },
+        { "key": "MAIL_VIEWS_PATH",   "type": "string", "required": false }
+    ]
+}
