@@ -1,0 +1,18 @@
+{
+    "name": "authorization",
+    "version": "1.0.0",
+    "solves": "authorization.policy",
+    "type": "module",
+
+    "requires": ["database.query"],
+    "exposes": ["Plugins\\Authorization\\API\\Contracts\\AuthorizationServiceContract"],
+
+    "routes": [],
+    "emits": [],
+    "listens": [],
+
+    "config": [
+        { "key": "AUTHZ_MODEL_PATH",   "type": "string", "required": false },
+        { "key": "AUTHZ_POLICY_TABLE", "type": "string", "required": false }
+    ]
+}

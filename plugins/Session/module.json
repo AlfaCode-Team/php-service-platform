@@ -1,0 +1,22 @@
+{
+    "name": "session",
+    "version": "1.0.0",
+    "solves": "session.management",
+    "type": "module",
+
+    "requires": [],
+    "exposes": ["AlfacodeTeam\\PhpServicePlatform\\Kernel\\Ports\\SessionPort"],
+
+    "routes": [],
+    "emits": [],
+    "listens": [],
+
+    "config": [
+        { "key": "SESSION_DRIVER",        "type": "string", "required": false },
+        { "key": "SESSION_COOKIE",        "type": "string", "required": false },
+        { "key": "SESSION_PATH",          "type": "string", "required": false },
+        { "key": "SESSION_LIFETIME",      "type": "int",    "required": false },
+        { "key": "SESSION_SAMESITE",      "type": "string", "required": false },
+        { "key": "SESSION_SERIALIZATION", "type": "string", "required": false }
+    ]
+}

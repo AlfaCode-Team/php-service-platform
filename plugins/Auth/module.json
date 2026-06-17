@@ -1,0 +1,19 @@
+{
+    "name": "auth",
+    "version": "1.0.0",
+    "solves": "auth.identity",
+    "type": "module",
+
+    "requires": ["database.query", "crypto.services"],
+    "exposes": ["Plugins\\Auth\\API\\Contracts\\AuthServiceContract"],
+
+    "routes": [],
+    "emits": [],
+    "listens": [],
+
+    "config": [
+        { "key": "JWT_SECRET",     "type": "string", "required": false },
+        { "key": "JWT_ALGO",       "type": "string", "required": false },
+        { "key": "AUTH_PAT_TABLE", "type": "string", "required": false }
+    ]
+}
