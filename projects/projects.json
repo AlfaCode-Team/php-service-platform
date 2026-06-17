@@ -1,0 +1,11 @@
+{
+    "shop": {
+        "name": "shop",
+        "version": "1.0.0",
+        "path": "/home/home/Documents/psp-shop",
+        "domains": [
+            "shop.localhost",
+            "shop.local"
+        ]
+    }
+}
