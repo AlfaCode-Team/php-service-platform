@@ -4,6 +4,8 @@
     "type": "library",
     "require": {
         "psr/http-message": "2.0.x-dev",
+        "psr/container": "^2.0",
+        "psr/log": "^3.0",
         "symfony/cache": "8.1.x-dev",
         "symfony/console": "^8.0",
         "composer/pcre": "^3.3",
@@ -11,9 +13,15 @@
         "phpshots/bind-it": "*",
         "alfacode-team/php-io-cli": "*",
         "alfacode-team/module-template": "*",
-        "alfacode-team/orchestrator": "*",
         "alfacode-team/pulse-engine": "*",
-        "alfacode-team/let-migrate": "*"
+        "alfacode-team/let-migrate": "*",
+        "symfony/expression-language": "^7.0",
+        "guzzlehttp/guzzle": "^7.11",
+        "firebase/php-jwt": "^7.0",
+        "league/flysystem": "^3.34",
+        "league/flysystem-aws-s3-v3": "^3.34",
+        "symfony/http-foundation": "^8.1",
+        "symfony/mime": "^8.1"
     },
     "require-dev": {
         "phpunit/phpunit": "13.2.x-dev",
@@ -42,10 +50,6 @@
         },
         {
             "type": "path",
-            "url": "modules/orchestrator"
-        },
-        {
-            "type": "path",
             "url": "modules/pulse-engine"
         },
         {
@@ -56,7 +60,23 @@
     "license": "MIT",
     "autoload": {
         "psr-4": {
-            "AlfacodeTeam\\PhpServicePlatform\\": "src/"
+            "AlfacodeTeam\\PhpServicePlatform\\": "src/",
+            "AlfacodeTeam\\PhpServicePlatform\\System\\": "src/System/",
+            "Project\\": "projects/",
+            "Plugins\\": "plugins/"
+        },
+        "files": [
+            "src/Kernel/Support/helpers.php",
+            "plugins/SocialAuth/Socialite/Support/helpers.php",
+            "plugins/Support/helpers.php"
+        ]
+    },
+    "bin": [
+        "bin/psp"
+    ],
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
         }
     },
     "authors": [

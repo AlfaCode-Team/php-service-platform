@@ -12,7 +12,8 @@
         "alfacode-team/php-io-cli": "*",
         "alfacode-team/module-template": "*",
         "alfacode-team/orchestrator": "*",
-        "alfacode-team/pulse-engine": "*"
+        "alfacode-team/pulse-engine": "*",
+        "alfacode-team/let-migrate": "*"
     },
     "require-dev": {
         "phpunit/phpunit": "13.2.x-dev",
@@ -46,6 +47,10 @@
         {
             "type": "path",
             "url": "modules/pulse-engine"
+        },
+        {
+            "type": "path",
+            "url": "modules/let-migrate"
         }
     ],
     "license": "MIT",

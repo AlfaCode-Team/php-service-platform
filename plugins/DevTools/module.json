@@ -1,0 +1,15 @@
+{
+    "name": "dev-tools",
+    "version": "1.0.0",
+    "solves": "dev.tooling",
+    "type": "module",
+
+    "requires": [],
+    "exposes": [],
+
+    "routes": [],
+    "emits": [],
+    "listens": [],
+
+    "config": []
+}
