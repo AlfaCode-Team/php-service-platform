@@ -68,7 +68,8 @@
         "files": [
             "src/Kernel/Support/helpers.php",
             "plugins/SocialAuth/Socialite/Support/helpers.php",
-            "plugins/Support/helpers.php"
+            "plugins/Support/helpers.php",
+            "plugins/Cookie/Support/helpers.php"
         ]
     },
     "bin": [

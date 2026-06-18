@@ -71,12 +71,14 @@ src/
 ├── Contracts/ModuleContract.php   ← solves(), requires(), exposes(), register(), boot()
 │
 ├── Boot/
-│   ├── BootPipeline.php           ← 9 stages, fail-fast on any error
+│   ├── BootPipeline.php           ← 10 stages, fail-fast on any error
 │   └── Stages/
 │       ├── ValidateConfigStage    ← env vars present + typed
 │       ├── DetectConflictsStage   ← no two modules share same solves()
 │       ├── DetectCyclesStage      ← no circular requires[] chains
-│       ├── CompileRouteManifest   ← routes[] → route-manifest.php
+│       ├── CompileServiceManifest ← services[] → service-manifest.php (+ __project__ scope)
+│       ├── CompileRouteManifest   ← routes[] → route-manifest.php (plugin + project; project OVERRIDES)
+│       ├── CompileViewManifest    ← views[] → view-manifest.php (project-first cascade + namespaces)
 │       ├── CompileJobManifest     ← job modules → job-manifest.php
 │       ├── CompileCommandManifest ← command modules → command-manifest.php
 │       ├── RegisterPortsStage     ← verify port bindings exist
@@ -98,7 +100,7 @@ src/
 │   └── ModuleContainer.php        ← request-scoped: scope isolation enforced
 │
 ├── Pipelines/
-│   ├── Http/   HttpPipeline + 6 stages + hook system (after.security, after.load, after.execute)
+│   ├── Http/   HttpPipeline + 6 stages + hook system (after.security/load/execute) + FilterRegistry/RouteFilterStage (declarative route filters[])
 │   ├── Cli/    CliPipeline + 6 stages  (Arguments + Output are @deprecated — use AbstractCommand)
 │   └── Worker/ WorkerPipeline + WorkerLoop + JobPayload + JobResult + retry strategies
 │
@@ -374,14 +376,65 @@ interface ModuleContract
     { "method": "POST", "path": "/api/invoices",      "handler": "InvoiceController@create" },
     { "method": "GET",  "path": "/api/invoices/{id}", "handler": "InvoiceController@show"   }
   ],
+  "views":   "resources/views",
   "emits":   ["invoice.created", "invoice.paid"],
   "listens": ["payment.succeeded"],
   "config":  ["INVOICE_CURRENCY", { "key": "INVOICE_TAX_RATE", "type": "float", "required": false }]
 }
 ```
 
-Routes are ONLY in module.json — never in PHP files.
+Plugin routes are ONLY in module.json — never in PHP files (projects declare
+their own routes in proj.json; see "RESOURCE RESOLUTION").
+Optional `views` (string/object/list) registers the plugin's view paths +
+namespace into the project-first cascade — see "RESOURCE RESOLUTION".
 Config vars declared here or boot fails with a descriptive error.
+
+---
+
+## RESOURCE RESOLUTION — DETERMINISTIC PROJECT-OVER-PLUGIN PRIORITY
+
+Routes and views resolve through ONE predictable model: **project resources
+always win over plugin resources by default.** Order is fixed at boot and
+compiled into manifests — never implicit or load-order dependent. A plugin may
+outrank the project ONLY by explicitly opting in (a lower numeric view
+`priority`); the platform never lets a plugin override the project silently.
+
+### Routes — project overrides plugin
+
+- Plugin routes: plugin `module.json` `routes[]` → compiled FIRST, under the
+  plugin's `solves` domain.
+- Project routes: `proj.json` `routes[]` (or `Kernel::withRoutes([...])`) →
+  compiled LAST, under the synthetic `__project__` scope (no module graph; the
+  full-class-path controller autowires from the request container).
+- A project route with the same `METHOD path` as a plugin route OVERRIDES it.
+  Two plugins claiming the same route still hard-fail at boot.
+
+```jsonc
+// proj.json
+{ "routes": [ { "method": "GET", "path": "/", "handler": "Shop\\Http\\HomeController@index" } ] }
+```
+
+### Views — project-first cascade + namespacing
+
+`CompileViewManifest` → `view-manifest.php`:
+`{ global: [project dirs…, plugin dirs…], namespaces: { task: [dir] } }`.
+
+Priority: LOWER wins. PROJECT view paths default **0** (highest); PLUGIN paths
+default **100** (fallback). In `PhpViewRenderer`:
+- `render('welcome')` → walks the global cascade (project first).
+- `render('task::welcome')` → project override first (`{global}/task/welcome.php`),
+  then the `task` namespace's own dir.
+
+Declaration shapes (module.json / proj.json `views`):
+`"resources/views"` | `{ "path": …, "namespace": "task", "priority": 100, "global": true }` | list.
+A plugin only preempts the project via an explicit lower `priority` (e.g. `-1`).
+`global:false` exposes a source under its namespace only. `VIEW_PATHS` env is
+PREPENDED to the cascade (operator override; still cannot let a plugin outrank
+the project).
+
+DO: project overrides by default; use `namespace::view` to target/avoid
+collisions. DON'T: rely on plugin load order; define project routes in PHP; let
+two plugins claim the same route or unnamespaced view name.
 
 ---
 
@@ -440,9 +493,10 @@ Request arrives
 1. CorrelationIdStage    — generate/propagate X-Correlation-ID (always first)
 2. SecurityStage         — run SecurityGateway, attach Identity on clear
    after.security hooks  — module stages (e.g. RateLimiterStage priority:10)
-3. ResolveStage          — route-manifest.php lookup → service name
+3. ResolveStage          — route-manifest.php lookup → service name (attaches route_entry)
 4. LoadStage             — dep graph calc → OnDemandLoader → ModuleContainer
    after.load hooks      — module stages
+   RouteFilterStage      — runs the matched route's declared filters[] (auth, throttle, …)
 5. ExecuteStage          — resolve service contract → DTO → handler → Response
    after.execute hooks   — module stages
 6. ErrorStage (wraps all) — catches all Throwables → ErrorPipeline → HTTP response
@@ -463,6 +517,50 @@ public function boot(HttpPipeline $http, ...): void
     $http->hook('after.security', RateLimiterStage::class, priority: 10);
     // Priority: 1-9 system, 10-19 security, 40-59 feature, 80-99 observability
 }
+```
+
+### TWO WAYS A STAGE RUNS — GLOBAL HOOK vs DECLARATIVE ROUTE FILTER
+
+A stage (`HttpStageContract`) runs through EXACTLY ONE mechanism — never both
+(double-registering would double-run it; e.g. a rate limiter would double-count).
+
+| Aspect | Global hook | Declarative route filter |
+|---|---|---|
+| Register | `$http->hook(slot, Stage::class, priority)` | `$http->filter('alias', Stage::class)` |
+| Runs on | EVERY request (stage self-gates internally) | ONLY routes that name the alias |
+| Declared where | the registering plugin's `boot()` | the route's `filters[]` in module.json / proj.json |
+| Use for | always-on cross-cutting (CORS, SecureHeaders) | opt-in per route (auth, throttle, hmac, shield) |
+
+Route filters are declared per route and compiled into the route manifest:
+```jsonc
+// module.json or proj.json route entry
+{ "method": "POST", "path": "/api/tasks", "handler": "...@create",
+  "filters": ["auth", "throttle:60,1"] }   // string or list; "alias:arg1,arg2" passes args
+```
+
+Any plugin publishes filter aliases from its `boot()` (the alias registry is
+shared — not owned by SecurityFilters):
+```php
+public function boot(HttpPipeline $http, ...): void
+{
+    $http->filter('json', RequireJsonStage::class);   // route opts in via "filters": ["json"]
+}
+```
+
+How a route filter executes ([RouteFilterStage] at the after.load position):
+- Reads the matched route's `filters[]` from `route_entry` (set by ResolveStage).
+- Resolves each alias via [FilterRegistry] to a stage instance (from CoreContainer
+  when bound, else `new`), and runs them as a NESTED onion around `$next` — so the
+  usual before/after semantics hold (code before `$next()` = inbound/short-circuit;
+  after = decorate Response). Filters run left-to-right in declaration order.
+- Exposes `active_filters` (alias list) + `filter_args` (parsed `:args`) as request
+  attributes, so a stage can tell it was invoked declaratively and read its config.
+- Unknown alias → throws at request time (register it in some Provider::boot()).
+
+```
+✗ Registering the SAME stage as BOTH a global hook AND a route filter — it runs twice
+✗ Naming a filter alias in a route that no Provider::boot() registered — request-time throw
+✗ Defining route filters anywhere but the route's filters[] in module.json / proj.json
 ```
 
 ---
@@ -836,16 +934,42 @@ First-party plugins (`plugins/`, namespace `Plugins\`; see `docs/ai-context/20_F
 | Plugin | solves | Provides | Activation |
 |---|---|---|---|
 | Storage | `storage.local` | `StoragePort` (local + S3) | on-demand |
-| View | `view.rendering` | `ViewRendererContract` (PHP templates: layouts, sections, decorators) | on-demand |
+| View | `view.rendering` | `ViewRendererContract` (PHP templates: layouts, sections, decorators; project-first cascade + `ns::view`) | on-demand |
 | HttpClient | `http.client` | `HttpClientPort` (cURL) | on-demand |
 | Session / Cookie / RedisCache | session/cookies/cache | `SessionPort` / `CookieJar` / `CachePort`+`QueuePort` | essential |
-| SecurityFilters | `http.security_filters` | CORS / SecureHeaders / HMAC / auth / rate-limit stages | always-hooked |
+| SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
 | Pageflow | `http.pageflow` | `PageflowResponder` (SPA bridge) | on-demand |
 
 View notes: no globals (paths/extensions/decorators/escaper injected), request-scoped
 (no cross-request leak under OpenSwoole), `SidebarManager` icon cache is instance-scoped
 not `static`. Escape ONCE — pre-escape via `setVar(..., 'html')` OR escape in-template,
 never both.
+
+Cookie notes: config in `plugins/Cookie/config/cookie.php` (env-driven; project copy at
+`projects/<name>/config/cookie.php` wins via `Paths::config()`). Env: `COOKIE_LIFETIME`
+(minutes), `COOKIE_PATH`, `COOKIE_DOMAIN`, `COOKIE_SECURE` (set `false` for local http://),
+`COOKIE_HTTP_ONLY`, `COOKIE_SAME_SITE`, `COOKIE_ENCRYPT_EXEMPT`. Helpers (autoloaded):
+`cookie_config(?key)`, `cookie(name, value, minutes?, overrides?)` → spread-ready array for
+`CookieJar::queue()` / `Response::withCookie()`. `CookieJar::queue()` attrs are nullable →
+fall back to config defaults. `.env` gotcha: a comment-only value (`KEY=  # note`) resolves
+to empty — keep inline comments on their own line.
+
+## Base controllers + RequestAware
+
+Optional base classes in `projects/Http/Controllers/` (namespace `Project\`; project layer,
+NOT kernel — views/cookies are plugin concerns):
+- `ApiController` — JSON helpers (`ok`, `created`, `noContent`, `paginated`, `okOrNotFound`,
+  `notFound`, `forbidden`, `unprocessable`, `identity`); pure kernel types.
+- `ViewController` — HTML helpers (`view`, `viewNotFound`, `redirect`, `back`); injects
+  `ViewRendererContract`.
+- Both `use InteractsWithCookies` (wraps every public `CookieJar` method, no `$request` arg).
+
+Both implement the kernel contract `Kernel\Http\Contracts\RequestAware`
+(`setRequest(Request): static`). `ExecuteStage` calls `setRequest($request)` then invokes a
+RequestAware action as `$method(...$routeParams)` — **without `$request`** (raw request stays
+at `$this->request`). Plain controllers keep `$method($request, ...$params)` — backward
+compatible. Don't add `$request` to a RequestAware action; don't call `CookieJar::applyTo()`
+from a controller (the flush stage does it).
 
 ---
 
@@ -940,7 +1064,10 @@ JobResult::skipped('Invoice already paid — email not needed')
 ✗ Use of Eloquent, Active Record, or any ORM
 ✗ Laravel facades, service providers, artisan patterns
 ✗ Symfony bundles, console components, event dispatcher
-✗ Static route definitions in PHP — routes belong in module.json only
+✗ Static route definitions in PHP — plugin routes in module.json, project routes in proj.json/withRoutes()
+✗ Relying on plugin load order for route/view resolution — it is deterministic (project-over-plugin)
+✗ Letting a plugin override a project route/view implicitly — only via an explicit lower view `priority`
+✗ Two plugins claiming the same route or the same unnamespaced view name — boot fails / use `namespace::view`
 ✗ Env vars read in modules without being declared in module.json config[]
 ✗ Business logic in Kernel classes — kernel knows nothing about any domain
 ✗ Integration events dispatched inside a try{} block — dispatch AFTER commit
@@ -951,7 +1078,7 @@ JobResult::skipped('Invoice already paid — email not needed')
 ✗ Security logic in the Application layer — it belongs in SecurityGateway layers
 ✗ Module code importing another module's internal class — use published contract
 ✗ float for money values — use Money value object with integer cents
-✗ Routes, config vars, or event declarations in PHP — they belong in module.json
+✗ Config vars or event declarations in PHP — they belong in module.json (project routes excepted: proj.json/withRoutes())
 ✗ throw inside a catch without rollbackTransaction() first
 ✗ hash comparison with === for tokens — use hash_equals() always
 ✗ Static properties in request-scoped classes — they leak between requests in Swoole

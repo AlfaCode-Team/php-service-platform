@@ -253,6 +253,56 @@ public function upload(Request $request): Response
 
 ---
 
+## Base Controllers (project layer — `Project\Http\Controllers\`)
+
+Two optional base classes live in `projects/Http/Controllers/` (namespace
+`Project\`). They are project-layer, NOT kernel, because view rendering and
+cookies are plugin concerns — the kernel stays renderer-agnostic.
+
+| Base | Use for | Coupling |
+|---|---|---|
+| `ApiController` | JSON endpoints | Pure kernel types (no plugin) |
+| `ViewController` | HTML/view endpoints | Injects `ViewRendererContract` (View plugin) |
+
+`ApiController` helpers: `ok()`, `created()`, `accepted()`, `noContent()`,
+`paginated()`, `okOrNotFound()`, `notFound()`, `forbidden()`, `unprocessable()`,
+`identity()`. `ViewController` helpers: `view()`, `viewNotFound()`, `redirect()`,
+`back()`.
+
+Both `use InteractsWithCookies` (trait wrapping every public `CookieJar` method:
+`cookie()`, `queueCookie()`, `rememberCookie()`, `forgetCookie()`,
+`hasQueuedCookie()`, `decryptCookie()`, `cookieJar()`).
+
+### RequestAware — actions take route params ONLY (no `$request`)
+
+Both bases implement the kernel contract
+`AlfacodeTeam\…\Kernel\Http\Contracts\RequestAware` (`setRequest(Request): static`).
+`ExecuteStage` detects it and:
+
+- calls `setRequest($request)` with the container-bearing request BEFORE the action, then
+- invokes the action as `$method(...$routeParams)` — WITHOUT `$request`.
+
+Plain controllers (not `RequestAware`) keep the conventional
+`$method($request, ...$params)` signature — fully backward compatible.
+
+```php
+use Project\Http\Controllers\ApiController;
+
+final class CartController extends ApiController        // RequestAware
+{
+    public function show(string $id): Response          // route param only — no $request
+    {
+        $this->queueCookie('last_viewed', $id);         // request injected by the kernel
+        return $this->okOrNotFound($this->cart->find($id)?->toArray());
+    }
+}
+```
+
+The raw request is still available inside the action as `$this->request`; any
+cookie helper also accepts an explicit `?Request` override.
+
+---
+
 ## AI Instructions for Controller Code
 
 When generating or reviewing controller code:

@@ -12,6 +12,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Boot\Stages\{
     DetectCyclesStage,
     CompileServiceManifestStage,
     CompileRouteManifestStage,
+    CompileViewManifestStage,
     CompileJobManifestStage,
     CompileCommandManifestStage,
     RegisterPortsStage,
@@ -50,10 +51,11 @@ final class BootPipeline
             new DetectCyclesStage($moduleClasses),           // 3. no circular requires[] chains
             new CompileServiceManifestStage($moduleClasses, projectRoutes: $projectRoutes), // 4. dep graph → service-manifest.php
             new CompileRouteManifestStage($moduleClasses, projectRoutes: $projectRoutes),   // 5. routes[] → route-manifest.php
-            new CompileJobManifestStage($moduleClasses),     // 6. jobs[] → job-manifest.php
-            new CompileCommandManifestStage($moduleClasses), // 7. commands[] → command-manifest.php
-            new RegisterPortsStage($core),                   // 8. Port → Adapter bindings validated
-            new BindSecurityStage($securityLayers),          // 9. SecurityGateway layers validated
+            new CompileViewManifestStage($moduleClasses),    // 6. views[] → view-manifest.php (project-first cascade)
+            new CompileJobManifestStage($moduleClasses),     // 7. jobs[] → job-manifest.php
+            new CompileCommandManifestStage($moduleClasses), // 8. commands[] → command-manifest.php
+            new RegisterPortsStage($core),                   // 9. Port → Adapter bindings validated
+            new BindSecurityStage($securityLayers),          // 10. SecurityGateway layers validated
         ];
     }
 

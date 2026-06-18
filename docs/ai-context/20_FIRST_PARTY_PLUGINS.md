@@ -12,7 +12,7 @@ project bootstrap (most are already in `app/bootstrap/base.php` or
 | `Authorization` | `authorization.policy` | `AuthorizationServiceContract` (Casbin RBAC/ABAC) |
 | `Auth` | `auth.identity` | `AuthServiceContract` + JWT/PAT SecurityLayers |
 | `SocialAuth` | `auth.social` | `SocialAuthServiceContract` (OAuth1/OAuth2) |
-| `SecurityFilters` | `http.security_filters` | HTTP pipeline stages (HMAC, Shield, RequireAuth, RateLimit) |
+| `SecurityFilters` | `http.security_filters` | global hooks (CORS, SecureHeaders) + route-filter aliases (`auth`, `throttle`, `hmac`, `shield`) |
 | `Crypto` | `crypto.services` | `EncryptionPort` + `HashingPort` adapters |
 | `Validation` | — (library) | `Validator` rules engine |
 | `I18n` | `i18n.translation` | `Translator` |
@@ -31,9 +31,11 @@ Activation: `Storage`, `View`, and `HttpClient` are **on-demand** (a consumer
 declares `requires: ["storage.local"]` / `["view.rendering"]` / `["http.client"]`).
 `Session`, `Cookie`, and
 `RedisCache` are **essential** (registered every request via
-`withEssentialModules` in `app/bootstrap/base.php`). `SecurityFilters` also
-provides the `CorsStage` + `SecureHeadersStage` pipeline stages. See
-`16_PLUGINS.md` and the MODULE ACTIVATION section of `CLAUDE.md`.
+`withEssentialModules` in `app/bootstrap/base.php`). `SecurityFilters` runs
+`CorsStage` + `SecureHeadersStage` as global hooks and registers the `auth` /
+`throttle` / `hmac` / `shield` route-filter aliases (opt in per route via
+`"filters": [...]`). See `16_PLUGINS.md`, the SecurityFilters section below, and
+the "TWO WAYS A STAGE RUNS" + MODULE ACTIVATION sections of `CLAUDE.md`.
 
 ---
 
@@ -110,6 +112,40 @@ encrypted via `EncryptionPort` (except an exempt list). Read incoming cookies wi
 Encryption is only meaningful with `APP_KEY` set — the kernel hard-fails at boot
 outside `local`/`testing` when it is missing.
 
+**Config — `plugins/Cookie/config/cookie.php` (env-driven; project override wins).**
+A project may copy it to `projects/<name>/config/cookie.php`; `cookie_config()`
+resolves the project file first (via `Paths::config()`), else the plugin default.
+Every value reads from `.env`:
+
+| Env | Key | Default |
+|---|---|---|
+| `COOKIE_LIFETIME` (minutes) | `lifetime` | `120` |
+| `COOKIE_PATH` | `path` | `/` |
+| `COOKIE_DOMAIN` | `domain` | `null` (bind to issuing host) |
+| `COOKIE_SECURE` | `secure` | `true` (set `false` for local http://) |
+| `COOKIE_HTTP_ONLY` | `http_only` | `true` |
+| `COOKIE_SAME_SITE` | `same_site` | `Lax` |
+| `COOKIE_ENCRYPT_EXEMPT` | `encrypt_exempt` | `[]` |
+
+`CookieJar::queue()` attributes are nullable — omitted ones fall back to these
+defaults, so callers usually pass only name + value.
+
+**Helpers (`plugins/Cookie/Support/helpers.php`, autoloaded):**
+
+```php
+cookie_config();              // full config array (cached per process)
+cookie_config('same_site');   // single key
+$jar->queue(...cookie('cart', $id, minutes: 30));            // spread into queue()
+Response::json($d)->withCookie(...cookie('seen', '1'));      // or into withCookie()
+```
+
+`cookie()` returns a spread-ready attribute array (keys match both
+`CookieJar::queue()` and `Response::withCookie()`); `maxAge` is in seconds.
+
+> `.env` gotcha: an empty value followed by an inline comment (`COOKIE_DOMAIN=  # note`)
+> resolves to empty — `LoadEnvironment` treats a comment-only value as `''`. Put
+> comments on their OWN line to avoid surprises with non-empty values.
+
 ## RedisCache (essential)
 
 `CachePort` + `QueuePort` on ext-redis (one shared lazy connection). Numbers are
@@ -161,19 +197,38 @@ $social->userFromCallback('github', $request);  // resolve user
 
 ## SecurityFilters (HTTP stages)
 
-The 0.3 filters rebuilt as `HttpStageContract` stages, registered as pipeline
-hooks. Each inspects the resolved request path/method and only enforces on its
-configured scope (router-driven), otherwise calls `$next`.
+The 0.3 filters rebuilt as `HttpStageContract` stages. CORS + SecureHeaders run as
+GLOBAL pipeline hooks (every request); HMAC, auth, Shield and the rate limiter are
+exposed as DECLARATIVE route-filter aliases that a route opts into by name. A stage
+runs through exactly ONE mechanism — never both (double-registering double-runs it).
+
+**Global hooks** (registered in `Provider::boot()`, run on every request):
 
 | Stage | Slot | Config |
 |---|---|---|
-| `HmacSignedStage` | after.security | `HMAC_PROTECTED_PREFIX`, `REQUEST_SIGNING_SECRET`, `HMAC_MAX_SKEW` |
-| `RequireAuthStage` | after.security | `AUTH_PROTECTED_PATHS` (exact / `prefix/*` / `*` segment) |
-| `ShieldStage` | after.security | `SHIELD_RULES` (`/path=role:admin;/x=perm:y`) |
-| `ApiRateLimitStage` | after.load | `RATE_LIMIT_PREFIX/MAX/WINDOW` (uses `CachePort`) |
+| `CorsStage` | after.security | `CORS_ALLOWED_ORIGINS/METHODS/HEADERS`, `CORS_ALLOW_CREDENTIALS`, `CORS_MAX_AGE` |
+| `SecureHeadersStage` | after.execute | `CONTENT_SECURITY_POLICY`, `HSTS_MAX_AGE` |
 
-`RequireAuthStage` is the answer to "require auth on `/profile/settings` only":
-the auth layer attaches Identity globally; this stage decides which paths demand it.
+**Route-filter aliases** (registered via `$http->filter(...)`; a route opts in with
+`"filters": [...]` in module.json / proj.json):
+
+| Alias | Stage | Config |
+|---|---|---|
+| `hmac` | `HmacSignedStage` | `HMAC_PROTECTED_PREFIX`, `REQUEST_SIGNING_SECRET`, `HMAC_MAX_SKEW` |
+| `auth` | `RequireAuthStage` | also honours `AUTH_PROTECTED_PATHS` (exact / `prefix/*` / `*` segment) |
+| `shield` | `ShieldStage` | `SHIELD_RULES` (`/path=role:admin;/x=perm:y`) |
+| `throttle` | `ApiRateLimitStage` | `RATE_LIMIT_PREFIX/MAX/WINDOW` (uses `CachePort`); `"throttle:max,window"` args |
+
+```jsonc
+// require auth + throttle on one route, declaratively
+{ "method": "POST", "path": "/api/tasks", "handler": "...@create",
+  "filters": ["auth", "throttle:60,1"] }
+```
+
+`RequireAuthStage` enforces when EITHER the route declared the `auth` filter OR the
+path is in `AUTH_PROTECTED_PATHS` — the auth layer attaches Identity globally, this
+stage decides which routes demand it. See CLAUDE.md "TWO WAYS A STAGE RUNS" for the
+hook-vs-filter model and `RouteFilterStage` / `FilterRegistry` internals.
 
 ## Crypto (kernel ports)
 

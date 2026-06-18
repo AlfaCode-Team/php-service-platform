@@ -49,15 +49,12 @@ final class Provider implements ModuleContract
 
         $container->singleton(CookieJar::class, static function (ModuleContainer $c): CookieJar {
             $encrypter = $c->has(EncryptionPort::class) ? $c->make(EncryptionPort::class) : null;
-
-            $exemptRaw = (string) (env('COOKIE_ENCRYPT_EXEMPT') ?: '');
-            $exempt    = $exemptRaw === ''
-                ? []
-                : array_values(array_filter(array_map('trim', explode(',', $exemptRaw))));
+            $config    = cookie_config();
 
             return new CookieJar(
                 encrypter: $encrypter instanceof EncryptionPort ? $encrypter : null,
-                exempt:    $exempt,
+                exempt:    $config['encrypt_exempt'] ?? [],
+                defaults:  $config,
             );
         });
     }

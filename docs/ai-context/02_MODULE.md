@@ -39,8 +39,10 @@
   ],
 
   "routes": [                    // HTTP routes — compiled into route-manifest.php
+    // Optional "filters": [...] declares route filters by alias (run by
+    // RouteFilterStage). String or list; "alias:arg1,arg2" passes args.
     { "method": "GET",    "path": "/api/invoices",      "handler": "InvoiceController@index"   },
-    { "method": "POST",   "path": "/api/invoices",      "handler": "InvoiceController@create"  },
+    { "method": "POST",   "path": "/api/invoices",      "handler": "InvoiceController@create", "filters": ["auth", "throttle:60,1"] },
     { "method": "GET",    "path": "/api/invoices/{id}", "handler": "InvoiceController@show"    },
     { "method": "PUT",    "path": "/api/invoices/{id}", "handler": "InvoiceController@update"  },
     { "method": "DELETE", "path": "/api/invoices/{id}", "handler": "InvoiceController@destroy" }

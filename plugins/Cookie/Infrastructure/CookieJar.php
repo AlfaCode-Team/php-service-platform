@@ -27,25 +27,41 @@ final class CookieJar
     private array $queued = [];
 
     /**
-     * @param list<string> $exempt cookie names whose values are NOT encrypted
+     * @param list<string>                                                                                          $exempt   cookie names whose values are NOT encrypted
+     * @param array{lifetime?: int, path?: string, domain?: ?string, secure?: bool, http_only?: bool, same_site?: string} $defaults env-driven attribute defaults (see config/cookie.php)
      */
     public function __construct(
         private readonly ?EncryptionPort $encrypter = null,
         private readonly array $exempt = [],
+        private readonly array $defaults = [],
     ) {}
 
+    /**
+     * Queue a cookie. Any attribute left null falls back to the configured
+     * default (config/cookie.php), so callers usually pass only name + value.
+     * $maxAge is in SECONDS; the default lifetime in config is in MINUTES.
+     */
     public function queue(
         string $name,
         string $value,
-        int $maxAge = 0,
-        string $path = '/',
+        ?int $maxAge = null,
+        ?string $path = null,
         ?string $domain = null,
-        bool $secure = true,
-        bool $httpOnly = true,
-        string $sameSite = 'Lax',
+        ?bool $secure = null,
+        ?bool $httpOnly = null,
+        ?string $sameSite = null,
         bool $raw = false,
     ): void {
-        $this->queued[$name] = compact('value', 'maxAge', 'path', 'domain', 'secure', 'httpOnly', 'sameSite', 'raw');
+        $this->queued[$name] = [
+            'value'    => $value,
+            'maxAge'   => $maxAge   ?? (int) ($this->defaults['lifetime'] ?? 0) * 60,
+            'path'     => $path     ?? (string) ($this->defaults['path'] ?? '/'),
+            'domain'   => $domain   ?? ($this->defaults['domain'] ?? null),
+            'secure'   => $secure   ?? (bool) ($this->defaults['secure'] ?? true),
+            'httpOnly' => $httpOnly ?? (bool) ($this->defaults['http_only'] ?? true),
+            'sameSite' => $sameSite ?? (string) ($this->defaults['same_site'] ?? 'Lax'),
+            'raw'      => $raw,
+        ];
     }
 
     /** Queue a cookie that expires in ~5 years. */

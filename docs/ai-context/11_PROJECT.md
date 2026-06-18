@@ -125,9 +125,41 @@ Applied to:
 
 ---
 
+## Project Routes & Views (Project-Over-Plugin Priority)
+
+A project can declare its OWN routes and view paths — they take precedence over
+plugin resources by default (deterministic, compiled at boot).
+
+```jsonc
+// projects/<name>/proj.json  (or the flat project-root proj.json)
+{
+  "name": "shop",
+  "views": "resources",                                  // project view root (priority 0)
+  "routes": [
+    { "method": "GET", "path": "/",     "handler": "Shop\\Http\\HomeController@index" },
+    { "method": "GET", "path": "/ping", "handler": "Shop\\Http\\HomeController@ping"  }
+  ]
+}
+```
+
+- Routes: `EntryHelpers::projectRoutes($projectPath)` reads `proj.json`
+  `routes[]`; the project bootstrap passes them to `Kernel::withRoutes(...)`.
+  They compile AFTER all plugin routes and OVERRIDE a plugin route with the same
+  `METHOD path`. They resolve under the synthetic `__project__` scope (no module
+  graph); the full-class-path controller autowires from the request container.
+  Keep project controllers thin — orchestrate published plugin contracts.
+- Views: project view paths sort to priority `0` (highest). `render('welcome')`
+  resolves the project copy before any plugin's; `render('plugin::view')` can be
+  overridden by dropping `{project-views}/plugin/view.php`.
+
+See "RESOURCE RESOLUTION" in CLAUDE.md for the complete model.
+
+---
+
 ## Rules For Future Project Work
 
 - Keep business logic out of `app/`, `bootstrap/`, and project bootstrap files
+- Project routes go in `proj.json` routes[] (or `Kernel::withRoutes()`), never in PHP
 - Put only port/adapters/security/module lists in bootstrap wiring
 - Add new projects under `projects/{name}/bootstrap/app.php`
 - Ensure module classes listed in `withModules()` have valid `module.json`
