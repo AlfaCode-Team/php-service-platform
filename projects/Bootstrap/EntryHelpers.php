@@ -85,6 +85,43 @@ final class EntryHelpers
         return DomainResolver::resolve($rootPath, $host);
     }
 
+    /**
+     * Read project-layer routes declared in <projectPath>/proj.json under the
+     * optional "routes" key. Each route is normalised to
+     * {method, path, handler} and silently dropped if malformed, so a typo in
+     * proj.json never breaks the boot — invalid handlers are caught later by the
+     * route-manifest compiler with a descriptive error.
+     *
+     * @return list<array{method: string, path: string, handler: string}>
+     */
+    public static function projectRoutes(string $projectPath): array
+    {
+        $file = rtrim($projectPath, '/') . '/proj.json';
+        if (!is_file($file)) {
+            return [];
+        }
+
+        $data = json_decode((string) file_get_contents($file), true);
+        if (!is_array($data) || !isset($data['routes']) || !is_array($data['routes'])) {
+            return [];
+        }
+
+        $routes = [];
+        foreach ($data['routes'] as $route) {
+            if (!is_array($route)
+                || !isset($route['method'], $route['path'], $route['handler'])) {
+                continue;
+            }
+            $routes[] = [
+                'method'  => (string) $route['method'],
+                'path'    => (string) $route['path'],
+                'handler' => (string) $route['handler'],
+            ];
+        }
+
+        return $routes;
+    }
+
     private static function sanitiseProject(string $project): string
     {
         $project = trim($project);

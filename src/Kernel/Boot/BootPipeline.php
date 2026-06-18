@@ -34,18 +34,22 @@ final class BootPipeline
     /**
      * @param list<class-string> $moduleClasses
      * @param array<int, \AlfacodeTeam\PhpServicePlatform\Kernel\Security\Contracts\SecurityLayerContract> $securityLayers
+     * @param list<array{method: string, path: string, handler: string}> $projectRoutes
+     *   Project-layer routes (declared via Kernel::withRoutes), compiled into the
+     *   route manifest under the synthetic '__project__' scope with no module graph.
      */
     public function __construct(
         private readonly array $moduleClasses,
         private readonly CoreContainer $core,
         array $securityLayers = [],
+        array $projectRoutes = [],
     ) {
         $this->stages = [
             new ValidateConfigStage($moduleClasses),         // 1. env vars present + typed
             new DetectConflictsStage($moduleClasses),        // 2. no two modules share solves()
             new DetectCyclesStage($moduleClasses),           // 3. no circular requires[] chains
-            new CompileServiceManifestStage($moduleClasses), // 4. dep graph → service-manifest.php
-            new CompileRouteManifestStage($moduleClasses),   // 5. routes[] → route-manifest.php
+            new CompileServiceManifestStage($moduleClasses, projectRoutes: $projectRoutes), // 4. dep graph → service-manifest.php
+            new CompileRouteManifestStage($moduleClasses, projectRoutes: $projectRoutes),   // 5. routes[] → route-manifest.php
             new CompileJobManifestStage($moduleClasses),     // 6. jobs[] → job-manifest.php
             new CompileCommandManifestStage($moduleClasses), // 7. commands[] → command-manifest.php
             new RegisterPortsStage($core),                   // 8. Port → Adapter bindings validated
