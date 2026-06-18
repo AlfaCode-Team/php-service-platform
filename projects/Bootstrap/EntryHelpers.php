@@ -87,12 +87,14 @@ final class EntryHelpers
 
     /**
      * Read project-layer routes declared in <projectPath>/proj.json under the
-     * optional "routes" key. Each route is normalised to
-     * {method, path, handler} and silently dropped if malformed, so a typo in
-     * proj.json never breaks the boot — invalid handlers are caught later by the
-     * route-manifest compiler with a descriptive error.
+     * optional "routes" key. Each route keeps method/path/handler plus the
+     * optional "filters" and "requires" arrays (passed through to the route-
+     * manifest compiler); malformed entries are silently dropped so a typo in
+     * proj.json never breaks the boot — invalid handlers and unknown require
+     * domains are caught later by the route-manifest compiler with a descriptive
+     * error.
      *
-     * @return list<array{method: string, path: string, handler: string}>
+     * @return list<array{method: string, path: string, handler: string, filters?: mixed, requires?: mixed}>
      */
     public static function projectRoutes(string $projectPath): array
     {

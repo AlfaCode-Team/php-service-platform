@@ -24,14 +24,24 @@ final class CompileRouteManifestStage implements BootStageContract
     {
         $routes = [];
 
-        // Set of every module domain that some module solves(). A route's
-        // requires[] may only name a domain in this set — validated at boot so a
-        // typo fails here with a clear message instead of a request-time 500.
+        // PASS 1 — read every module manifest once and collect the full set of
+        // domains some module solves(). Building this BEFORE compiling any route
+        // means a route's requires[] can name a domain declared by a module that
+        // appears later in the list (order-independent validation).
+        $manifests    = [];
         $knownDomains = [];
-
         foreach ($this->moduleClasses as $moduleClass) {
-            $manifest = $this->reader->read($moduleClass);
+            $manifest               = $this->reader->read($moduleClass);
+            $manifests[$moduleClass] = $manifest;
             $knownDomains[$manifest['solves']] = true;
+        }
+
+        // PASS 2a — plugin routes (from module.json). A plugin route normally
+        // gets its deps via its module's solves graph, but it MAY also declare
+        // route-level requires[] (validated + honoured by LoadStage), kept
+        // consistent with project routes.
+        foreach ($this->moduleClasses as $moduleClass) {
+            $manifest = $manifests[$moduleClass];
             foreach ($manifest['routes'] ?? [] as $route) {
                 if (!isset($route['method'], $route['path'], $route['handler'])) {
                     throw new BootException(
@@ -54,13 +64,19 @@ final class CompileRouteManifestStage implements BootStageContract
                     'module' => $moduleClass,
                     'solves' => $manifest['solves'],
                     'filters' => $this->normalizeFilters($route['filters'] ?? []),
+                    'requires' => $this->validateRequires(
+                        $this->normalizeRequires($route['requires'] ?? []),
+                        $knownDomains,
+                        "Route [{$key}] in [{$moduleClass}]",
+                    ),
                 ];
             }
         }
 
-        // Project-layer routes — declared in project wiring (Kernel::withRoutes),
-        // not in any module.json. They carry no module and resolve under the
-        // synthetic PROJECT_SCOPE, which has an empty dependency graph.
+        // PASS 2b — project-layer routes (Kernel::withRoutes / proj.json), not in
+        // any module.json. They carry no module and resolve under the synthetic
+        // PROJECT_SCOPE, whose dependency graph is empty — so route-level
+        // requires[] is the ONLY way a project page pulls in a plugin.
         foreach ($this->projectRoutes as $route) {
             if (!isset($route['method'], $route['path'], $route['handler'])) {
                 throw new BootException(
@@ -78,33 +94,47 @@ final class CompileRouteManifestStage implements BootStageContract
             // never the reverse. Plugins cannot reclaim a route the project owns.
             $key = strtoupper($route['method']) . ' ' . $route['path'];
 
-            // Per-route module dependencies. The '__project__' scope has no
-            // requires of its own, so a project route names the plugin domains
-            // it needs HERE; LoadStage seeds them into this request's graph only.
-            // Lets one page use view.rendering without loading it for every
-            // project route. Each must name a real module domain — fail at boot.
-            $requires = $this->normalizeRequires($route['requires'] ?? []);
-            foreach ($requires as $dep) {
-                if (!isset($knownDomains[$dep])) {
-                    throw new BootException(
-                        "Project route [{$key}] requires unknown module domain [{$dep}]. "
-                        . 'No registered module solves it — check the spelling and that the '
-                        . 'plugin is listed in withModules()/withEssentialModules().'
-                    );
-                }
-            }
-
             $routes[$key] = [
                 'handler' => $route['handler'],
                 'module' => null,
                 'solves' => self::PROJECT_SCOPE,
                 'overrides' => $routes[$key]['module'] ?? null,
                 'filters' => $this->normalizeFilters($route['filters'] ?? []),
-                'requires' => $requires,
+                // Per-route module dependencies seeded into this request's graph
+                // by LoadStage. Each must name a real module domain — fail at boot.
+                'requires' => $this->validateRequires(
+                    $this->normalizeRequires($route['requires'] ?? []),
+                    $knownDomains,
+                    "Project route [{$key}]",
+                ),
             ];
         }
 
         ManifestWriter::write('route-manifest.php', $routes);
+    }
+
+    /**
+     * Ensure every declared dependency names a domain some module solves(),
+     * failing fast at boot with a descriptive message instead of a request-time
+     * 500. Returns the list unchanged on success.
+     *
+     * @param list<string>         $requires
+     * @param array<string, true>  $knownDomains
+     * @return list<string>
+     */
+    private function validateRequires(array $requires, array $knownDomains, string $context): array
+    {
+        foreach ($requires as $dep) {
+            if (!isset($knownDomains[$dep])) {
+                throw new BootException(
+                    "{$context} requires unknown module domain [{$dep}]. "
+                    . 'No registered module solves it — check the spelling and that the '
+                    . 'plugin is listed in withModules()/withEssentialModules().'
+                );
+            }
+        }
+
+        return $requires;
     }
 
     /**
