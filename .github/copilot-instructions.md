@@ -414,6 +414,24 @@ outrank the project ONLY by explicitly opting in (a lower numeric view
 { "routes": [ { "method": "GET", "path": "/", "handler": "Shop\\Http\\HomeController@index" } ] }
 ```
 
+**Per-route `requires`** — `__project__` has an EMPTY graph, so a project route
+loads NO plugins by default (on-demand contracts are unbound). Opt one route into
+a plugin without making it essential by naming module domains in `requires[]`:
+
+```jsonc
+{ "method": "GET", "path": "/dashboard", "handler": "Shop\\Http\\DashboardController@index",
+  "requires": ["view.rendering"] }
+```
+
+`CompileRouteManifestStage` validates each at BOOT (unknown domain → build fails)
+and `LoadStage` seeds them into THAT request's graph only
+(`DependencyGraphCalculator::resolve($service, $additional)`). Scope isolation
+still holds — only the plugin's PUBLIC contract resolves, not its `bindInternal`.
+Choose: route `requires[]` (some routes) vs `withEssentialModules()` (every
+request) vs declaring the route in the plugin's `module.json` (the endpoint IS the
+plugin). Project routes also pass through `filters[]`; plugin routes may carry
+`requires[]` too.
+
 ### Views — project-first cascade + namespacing
 
 `CompileViewManifest` → `view-manifest.php`:
@@ -883,9 +901,13 @@ interface QueuePort {
 
 interface MailPort  { public function send(string|array $to, string $subject, string $view, array $data = []): void; }
 interface SmsPort   { public function send(string $to, string $message): void; }
-interface StoragePort {
-    public function store(string $contents, string $filename, string $path = ''): string;
+interface StoragePort {      // adapter: plugins/Storage (local disk OR S3/Flysystem)
+    public function store(string $contents, string $filename, string $path = '', string $visibility = 'private'): string;
+    public function storeStream($resource, string $filename, string $path = '', string $visibility = 'private'): string;
+    public function get(string $path): string;
+    public function readStream(string $path);                          // caller closes the handle
     public function temporaryUrl(string $path, int $expiresInSeconds = 3600): string;
+    public function exists(string $path): bool;
     public function delete(string $path): bool;
 }
 
@@ -903,7 +925,22 @@ interface SessionPort {      // request-scoped — adapter: plugins/Session (ess
     public function regenerate(): void; public function invalidate(): void;
     public function shouldPersist(): bool; public function save(): void;  // lazy persistence
 }
+// Drivers: SESSION_DRIVER=file (default) | array | cookie.
+//   cookie = stateless, state stored IN the cookie (no server store; multi-node safe).
+//     Encrypted via EncryptionPort when APP_KEY/Crypto present, else HMAC-signed
+//     (SESSION_SIGNING_KEY→APP_KEY). Absolute SESSION_LIFETIME + sliding
+//     SESSION_IDLE_TIMEOUT (enforced server-side), fingerprint binding
+//     (SESSION_COOKIE_FINGERPRINT=off|ua|ip|ua,ip), compression
+//     (SESSION_COOKIE_COMPRESS), size ceiling (SESSION_COOKIE_MAX_BYTES), and boot
+//     guards SESSION_COOKIE_REQUIRE_AUTH / SESSION_COOKIE_REQUIRE_ENCRYPTION.
+//     Keep <4KB — use file/Redis for large state. See 20_FIRST_PARTY_PLUGINS.md.
 ```
+
+Controllers reach the session via the `InteractsWithSession` trait on the
+`ApiController` / `ViewController` bases (`$this->sessionGet/Put/Pull/Forget`,
+`flash`, `csrfToken`, `regenerateSession`, `invalidateSession`). It shares the
+`HasRequest` concern with `InteractsWithCookies`. Never inject `SessionPort` into a
+Service/Repository — it is a controller-layer (project) concern.
 
 ---
 
@@ -933,10 +970,10 @@ First-party plugins (`plugins/`, namespace `Plugins\`; see `docs/ai-context/20_F
 
 | Plugin | solves | Provides | Activation |
 |---|---|---|---|
-| Storage | `storage.local` | `StoragePort` (local + S3) | on-demand |
+| Storage | `storage.local` | `StoragePort` (local disk + S3/Flysystem; atomic+fsync writes, stream up/download, signed URLs; `storage_config()` / `STORAGE_*`; empty `STORAGE_S3_KEY` ⇒ IAM role chain) | on-demand |
 | View | `view.rendering` | `ViewRendererContract` (PHP templates: layouts, sections, decorators; project-first cascade + `ns::view`) | on-demand |
 | HttpClient | `http.client` | `HttpClientPort` (cURL) | on-demand |
-| Session / Cookie / RedisCache | session/cookies/cache | `SessionPort` / `CookieJar` / `CachePort`+`QueuePort` | essential |
+| Session / Cookie / RedisCache | session/cookies/cache | `SessionPort` (file/array/cookie) / `CookieJar` / `CachePort`+`QueuePort` | essential |
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
 | Pageflow | `http.pageflow` | `PageflowResponder` (SPA bridge) | on-demand |
 
@@ -954,6 +991,15 @@ Cookie notes: config in `plugins/Cookie/config/cookie.php` (env-driven; project 
 fall back to config defaults. `.env` gotcha: a comment-only value (`KEY=  # note`) resolves
 to empty — keep inline comments on their own line.
 
+Storage notes: config in `plugins/Storage/config/storage.php` (env-driven; project copy at
+`projects/<name>/config/storage.php` wins via `Paths::config()`). Helper (autoloaded):
+`storage_config(?dotted-key, default)` — e.g. `storage_config('s3.bucket')`,
+`storage_config('local.root')`. Env: `STORAGE_DRIVER` (`local`|`s3`), `STORAGE_ROOT`,
+`STORAGE_URL_BASE`, `STORAGE_URL_SECRET`, `STORAGE_S3_BUCKET`, `STORAGE_S3_REGION`,
+`STORAGE_S3_KEY`/`STORAGE_S3_SECRET` (leave empty on EC2/ECS/EKS → AWS IAM role chain),
+`STORAGE_S3_ENDPOINT`, `STORAGE_S3_PATH_STYLE`. Local writes are atomic + fsync'd with
+short-write detection; use `storeStream()`/`readStream()` for large blobs.
+
 ## Base controllers + RequestAware
 
 Optional base classes in `projects/Http/Controllers/` (namespace `Project\`; project layer,
@@ -962,7 +1008,9 @@ NOT kernel — views/cookies are plugin concerns):
   `notFound`, `forbidden`, `unprocessable`, `identity`); pure kernel types.
 - `ViewController` — HTML helpers (`view`, `viewNotFound`, `redirect`, `back`); injects
   `ViewRendererContract`.
-- Both `use InteractsWithCookies` (wraps every public `CookieJar` method, no `$request` arg).
+- Both `use InteractsWithCookies` (wraps every public `CookieJar` method, no `$request` arg)
+  and `InteractsWithSession` (`sessionGet/Put/Has/Pull/Forget`, `flash`, `csrfToken`,
+  `regenerateSession`, `invalidateSession`). Both share the `HasRequest` concern.
 
 Both implement the kernel contract `Kernel\Http\Contracts\RequestAware`
 (`setRequest(Request): static`). `ExecuteStage` calls `setRequest($request)` then invokes a

@@ -23,7 +23,7 @@ project bootstrap (most are already in `app/bootstrap/base.php` or
 | `Storage` | `storage.local` | `StoragePort` — local disk + S3 driver (Flysystem), signed URLs |
 | `View` | `view.rendering` | `ViewRendererContract` — PHP template engine (layouts, sections, decorators) |
 | `HttpClient` | `http.client` | `HttpClientPort` — cURL client, fluent builder, multipart |
-| `Session` | `session.management` | `SessionPort` — file/array handlers, flash, CSRF, lazy persist |
+| `Session` | `session.management` | `SessionPort` — file/array/cookie handlers, flash, CSRF, lazy persist |
 | `Cookie` | `http.cookies` | `CookieJar` — queued cookies, encrypt/decrypt via `EncryptionPort` |
 | `RedisCache` | `cache.redis` | `CachePort` + `QueuePort` — ext-redis, in-memory fallback |
 
@@ -41,16 +41,42 @@ the "TWO WAYS A STAGE RUNS" + MODULE ACTIVATION sections of `CLAUDE.md`.
 
 ## Storage (local + S3)
 
-`StoragePort` adapter. `STORAGE_DRIVER=local` (default) uses atomic file writes
-under `STORAGE_ROOT` with HMAC-signed `temporaryUrl()`; `STORAGE_DRIVER=s3` uses
+`StoragePort` adapter. `STORAGE_DRIVER=local` (default) uses atomic, fsync'd file
+writes under `STORAGE_ROOT` (short-write detection guards against silent
+disk-full corruption) with HMAC-signed `temporaryUrl()`; `STORAGE_DRIVER=s3` uses
 `league/flysystem-aws-s3-v3` (AWS S3 / DigitalOcean Spaces / Cloudflare R2 / MinIO)
 with native pre-signed URLs. On-demand: a consuming module declares
 `{ "requires": ["storage.local"] }`.
 
+**S3 credentials:** leave `STORAGE_S3_KEY` empty on EC2/ECS/EKS — `fromConfig()`
+then omits static credentials so the AWS default provider chain (IAM
+instance/task roles, env, SSO) resolves them. Only set the key/secret for
+non-AWS providers or local dev. The adapter is bound as a request-scoped
+**singleton**, so the `S3Client` is built once per request, not per resolution.
+
+**Configuration** is env-driven through `config/storage.php`, read via the
+`storage_config()` helper (dotted access; a project copy at
+`projects/<name>/config/storage.php` overrides the plugin default):
+
+```php
+storage_config('driver');      // 'local' | 's3'
+storage_config('local.root');  // STORAGE_ROOT
+storage_config('s3.bucket');   // STORAGE_S3_BUCKET
+```
+
+**Streaming** (large blobs, no full in-memory buffer):
+
 ```php
 $path = $storage->store($bytes, 'invoice.pdf', 'invoices/2026', 'private');
 $url  = $storage->temporaryUrl($path, 600);
+
+$storage->storeStream($readable, 'export.csv', 'exports');   // stream → storage
+$handle = $storage->readStream('exports/export.csv');        // storage → stream (caller closes)
 ```
+
+Env keys: `STORAGE_DRIVER`, `STORAGE_ROOT`, `STORAGE_URL_BASE`,
+`STORAGE_URL_SECRET`, `STORAGE_S3_BUCKET`, `STORAGE_S3_REGION`, `STORAGE_S3_KEY`,
+`STORAGE_S3_SECRET`, `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PATH_STYLE`.
 
 ## View (PHP templates)
 
@@ -95,7 +121,7 @@ $client->pending()->asMultipart()->attach('file', $bytes, 'a.png')->post($url);
 ## Session (essential)
 
 `SessionPort` adapter with native `\SessionHandlerInterface` handlers
-(`SESSION_DRIVER=file|array`), flash data, CSRF `token()`, `regenerate()`/
+(`SESSION_DRIVER=file|array|cookie`), flash data, CSRF `token()`, `regenerate()`/
 `invalidate()` for fixation defence, and **lazy persistence** — a fresh visitor
 who never writes the session gets no file and no cookie (stateless API/bot traffic
 stays clean). `StartSessionStage` (hooked `after.load`) opens it before modules
@@ -103,6 +129,42 @@ and persists + sets the cookie after, only when `shouldPersist()`.
 
 > Apps must call `$session->regenerate()` after login (fixation defence). The
 > kernel's CSRF layer is double-submit-cookie based and independent of `token()`.
+
+### Drivers
+
+| `SESSION_DRIVER` | Storage | Notes |
+|---|---|---|
+| `file` (default) | one file per session under `var/sessions/` | server-side; `SESSION_PATH` overrides the dir |
+| `array` | in-memory (per process) | tests / CLI / stateless contexts |
+| `cookie` | **in the session cookie itself** | stateless & horizontally-scalable — no server store |
+
+### Cookie driver — stateless, encrypted/signed sessions
+
+`CookieSessionHandler` carries the whole serialized attribute bag inside the
+session cookie, so nothing is stored server-side (ideal for multi-node deploys).
+Defence in depth, all env-driven:
+
+- **Protection** — encrypted via `EncryptionPort` when `APP_KEY`/Crypto is present
+  (confidential + authenticated); otherwise **HMAC-SHA256 signed** with
+  `SESSION_SIGNING_KEY` (falls back to `APP_KEY`) — readable but tamper-evident,
+  verified with `hash_equals()`.
+- **Timeouts** — `SESSION_LIFETIME` (absolute, never extended by re-saving) and
+  `SESSION_IDLE_TIMEOUT` (sliding), both enforced server-side on read.
+- **Fingerprint binding** — `SESSION_COOKIE_FINGERPRINT=off|ua|ip|ua,ip` ties the
+  session to a hashed client fingerprint. `ua` survives IP changes (safe for
+  mobile); `ip`/`ua,ip` are stricter anti-theft.
+- **Compression** — `SESSION_COOKIE_COMPRESS` deflates data above N bytes to fit
+  more under the ~4 KB cookie limit; `SESSION_COOKIE_MAX_BYTES` drops an oversized
+  cookie (and expires any stale one) rather than emit an invalid `Set-Cookie`.
+- **Hard guards** — `SESSION_COOKIE_REQUIRE_AUTH` (default on) fails boot unless
+  signed or encrypted; `SESSION_COOKIE_REQUIRE_ENCRYPTION` fails boot unless
+  *encrypted* (blocks the signed-but-readable mode for confidential data).
+- **Cookie attributes** — `SESSION_SECURE=auto|true|false`, plus
+  `SESSION_COOKIE_PATH` / `SESSION_COOKIE_DOMAIN`.
+- Binary-safe regardless of `SESSION_SERIALIZATION` (`json` default | `php`).
+
+> Keep cookie sessions small (ids/flags/CSRF) — they ride on every request and are
+> capped at ~4 KB. Use `file` (or a Redis driver) for large session state.
 
 ## Cookie (essential)
 

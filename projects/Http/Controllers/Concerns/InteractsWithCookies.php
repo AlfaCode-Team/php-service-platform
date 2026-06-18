@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Project\Http\Controllers\Concerns;
 
 use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Request;
-use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\KernelException;
 use Plugins\Cookie\Infrastructure\CookieJar;
 
 /**
@@ -28,16 +27,7 @@ use Plugins\Cookie\Infrastructure\CookieJar;
  */
 trait InteractsWithCookies
 {
-    /** Request captured for this action (request-scoped — controllers are per-request). */
-    protected ?Request $request = null;
-
-    /** Store the active request so the cookie helpers can be called without it. */
-    public function setRequest(Request $request): static
-    {
-        $this->request = $request;
-
-        return $this;
-    }
+    use HasRequest;
 
     /** The request-scoped CookieJar, or null if the Cookie plugin is not loaded. */
     protected function cookieJar(?Request $request = null): ?CookieJar
@@ -110,16 +100,5 @@ trait InteractsWithCookies
     protected function decryptCookie(?string $value, ?Request $request = null): ?string
     {
         return $this->cookieJar($request)?->decrypt($value) ?? $value;
-    }
-
-    /** The explicit request when given, else the one captured via setRequest(). */
-    private function resolveRequest(?Request $request): Request
-    {
-        return $request
-            ?? $this->request
-            ?? throw new KernelException(
-                'No Request available for cookie helpers — pass one or call setRequest($request) first.',
-                layer: 'controller.cookies',
-            );
     }
 }

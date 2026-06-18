@@ -45,6 +45,16 @@ final class Store implements SessionPort
         return $this->name;
     }
 
+    /**
+     * The backing session handler. Exposed for StartSessionStage to detect a
+     * cookie-backed handler (CookieBackedHandler) and feed/collect the cookie
+     * payload — plugin-internal cohesion, not a cross-module seam.
+     */
+    public function handler(): \SessionHandlerInterface
+    {
+        return $this->handler;
+    }
+
     public function start(?string $id = null): void
     {
         $this->id = $this->isValidId($id) ? (string) $id : $this->generateId();

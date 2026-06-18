@@ -1377,6 +1377,14 @@ Project layer, NOT kernel — view rendering + cookies are plugin concerns.
 - Both `use InteractsWithCookies` — wraps every public `CookieJar` method:
   `cookie`, `queueCookie`, `rememberCookie`, `forgetCookie`, `hasQueuedCookie`,
   `decryptCookie`, `cookieJar`. Defaults come from `config/cookie.php` + `.env`.
+- Both `use InteractsWithSession` — wraps the `SessionPort`: `sessionGet`,
+  `sessionPut`, `sessionHas`, `sessionPull`, `sessionForget`, `flash`,
+  `csrfToken`, `regenerateSession` (call after login — fixation defence),
+  `invalidateSession` (logout), `session`. No-ops gracefully when the Session
+  plugin is absent.
+- `InteractsWithCookies` and `InteractsWithSession` share the `HasRequest`
+  concern (holds `$request` + `setRequest()`), flattened once so both traits
+  compose on one controller without conflict.
 
 ### RequestAware — kernel contract, actions take route params ONLY
 
@@ -1525,7 +1533,9 @@ interface MailPort {
 
 interface StoragePort {
     public function store(string $contents, string $filename, string $path = '', string $visibility = 'private'): string;
+    public function storeStream($resource, string $filename, string $path = '', string $visibility = 'private'): string;  // large uploads — no full buffer
     public function get(string $path): string;
+    public function readStream(string $path);                          // large downloads — caller closes the handle
     public function temporaryUrl(string $path, int $expiresInSeconds = 3600): string;
     public function exists(string $path): bool;
     public function delete(string $path): bool;
@@ -1717,6 +1727,47 @@ project bootstrap passes them to `->withRoutes(...)`. Keep project controllers
 THIN (orchestrate published plugin contracts) — real domain logic stays in
 plugins.
 
+#### Per-route `requires` — opt a project route into specific plugins
+
+The `__project__` scope has an EMPTY dependency graph, so by default a project
+route loads ZERO plugins: on-demand modules' `register()` never runs and their
+published contracts are unbound. To let ONE project route use a plugin without
+loading it app-wide, declare a route-level `requires[]` of module domains:
+
+```jsonc
+// proj.json — only THIS route pulls in view.rendering
+{ "method": "GET", "path": "/dashboard",
+  "handler": "Shop\\Http\\DashboardController@index",
+  "requires": ["view.rendering"] }
+```
+
+`CompileRouteManifestStage` validates each entry at BOOT (an unknown domain
+fails the build with a descriptive message) and stamps it onto the route entry;
+`LoadStage` seeds those domains (with their transitive `requires`) into THAT
+request's dependency graph only — `DependencyGraphCalculator::resolve($service,
+$additional)`. Routes without `requires[]` stay lean.
+
+Scope isolation still holds: a required plugin's PUBLIC contract resolves in the
+project controller, but its `bindInternal` bindings still throw
+`ScopeViolationException` cross-scope. This is the per-route alternative to
+making a plugin **essential** (loaded on every request):
+
+| Need | Mechanism |
+|---|---|
+| Some project routes need a plugin | route-level `requires[]` in `proj.json` |
+| Every request needs a plugin | `withEssentialModules([...])` |
+| The endpoint IS the plugin's domain | declare the route in the plugin's `module.json` |
+
+Project route entries also pass through `filters[]` (auth, throttle, …) to the
+compiler — same shapes as a plugin route. Plugin routes MAY also carry
+`requires[]`, though they normally get deps via their module's `solves` graph.
+
+```
+✓ A project route opts into a plugin via proj.json "requires": [domain, …].
+✓ Unknown require domains fail at BOOT, not at request time.
+✗ Requiring a plugin does NOT grant access to its internal bindings — only published contracts.
+```
+
 ### Views — project-first cascade + namespacing
 
 `CompileViewManifestStage` compiles `view-manifest.php` from every `views`
@@ -1804,10 +1855,10 @@ Local application-specific modules live in `plugins/`, NOT `projects/`.
 
 | Plugin        | Solves                  | Provides (port / stage)                                  | Activation |
 |---------------|-------------------------|----------------------------------------------------------|------------|
-| Storage       | `storage.local`         | `StoragePort` (local disk, signed temp URLs)             | on-demand  |
+| Storage       | `storage.local`         | `StoragePort` (local disk **or** S3/S3-compatible via Flysystem; atomic+fsync writes, stream up/download, signed temp URLs). Config via `storage_config()` / `STORAGE_*` env | on-demand  |
 | View          | `view.rendering`        | `ViewRendererContract` (PHP templates: layouts, sections, decorators; project-first cascade + `ns::view`) | on-demand  |
 | HttpClient    | `http.client`           | `HttpClientPort` (cURL, fluent builder, multipart)       | on-demand  |
-| Session       | `session.management`    | `SessionPort` (file/array handlers, flash, CSRF token)   | essential  |
+| Session       | `session.management`    | `SessionPort` (file/array/cookie handlers, flash, CSRF token). Cookie driver = stateless encrypted-or-HMAC-signed cookie with absolute + idle timeout, configurable fingerprint binding (UA and/or IP), transparent compression, size ceiling, and enforceable auth/encryption | essential  |
 | Cookie        | `http.cookies`          | `CookieJar` + queued-cookie flush stage (encrypts via `EncryptionPort`) | essential |
 | RedisCache    | `cache.redis`           | `CachePort` + `QueuePort` (ext-redis, in-memory fallback)| essential  |
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |

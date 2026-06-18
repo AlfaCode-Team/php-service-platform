@@ -71,6 +71,13 @@ Because handlers are in the `Plugins\` namespace, use the fully-qualified class 
 }
 ```
 
+A route entry may also carry `filters[]` (auth, throttle, …) and an optional
+`requires[]` of extra module domains. A plugin route normally gets its deps via
+its own `solves` graph, so `requires[]` is rarely needed here — it is the primary
+mechanism for PROJECT routes (whose `__project__` scope has no graph); see
+[11_PROJECT.md](11_PROJECT.md) "Per-route `requires`". Either way, every
+`requires[]` domain is validated at BOOT — an unknown domain fails the build.
+
 ---
 
 ## Registering a Plugin
@@ -106,7 +113,7 @@ of `CLAUDE.md` for on-demand vs essential:
 |---|---|---|---|
 | Storage | `storage.local` | `StoragePort` (local + S3) | on-demand |
 | HttpClient | `http.client` | `HttpClientPort` (cURL) | on-demand |
-| Session | `session.management` | `SessionPort` | essential |
+| Session | `session.management` | `SessionPort` (file/array/cookie drivers) | essential |
 | Cookie | `http.cookies` | `CookieJar` + flush stage | essential |
 | RedisCache | `cache.redis` | `CachePort` + `QueuePort` | essential |
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
