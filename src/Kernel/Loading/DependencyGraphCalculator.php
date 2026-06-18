@@ -7,11 +7,6 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\{CircularDependencyExcepti
 
 final class DependencyGraphCalculator
 {
-    /** @var array<string, array<string, mixed>> */
-    private array $resolved = [];
-    /** @var array<string, true> */
-    private array $resolving = [];
-
     /** @param array{services?: array<string, array<string, mixed>>} $manifest */
     public function __construct(
         private readonly array $manifest
@@ -26,32 +21,45 @@ final class DependencyGraphCalculator
      * than loading them for every project page. Each extra domain is resolved
      * (with its transitive requires) into the same graph.
      *
+     * STATELESS: all traversal state lives in locals passed by reference, never
+     * on $this. One calculator instance is shared across every request (and,
+     * under OpenSwoole, across concurrent coroutines) — keeping zero mutable
+     * instance state makes concurrent resolve() calls provably non-interfering,
+     * independent of whether any future edit introduces an I/O yield point.
+     *
      * @param list<string> $additional extra module domains to pull into the graph
      * @throws CircularDependencyException|KernelException
      */
     public function resolve(string $service, array $additional = []): DependencyGraph
     {
-        $this->resolved = [];
-        $this->resolving = [];
-        $this->visit($service);
+        /** @var array<string, array<string, mixed>> $resolved */
+        $resolved = [];
+        /** @var array<string, true> $resolving */
+        $resolving = [];
+
+        $this->visit($service, $resolved, $resolving);
         foreach ($additional as $dep) {
-            $this->visit($dep);
+            $this->visit($dep, $resolved, $resolving);
         }
 
-        return new DependencyGraph($this->resolved);
+        return new DependencyGraph($resolved);
     }
 
-    private function visit(string $service): void
+    /**
+     * @param array<string, array<string, mixed>> $resolved
+     * @param array<string, true>                 $resolving
+     */
+    private function visit(string $service, array &$resolved, array &$resolving): void
     {
-        if (isset($this->resolved[$service])) {
+        if (isset($resolved[$service])) {
             return;
         }
-        if (isset($this->resolving[$service])) {
-            $path = implode(' -> ', array_keys($this->resolving)) . ' -> ' . $service;
+        if (isset($resolving[$service])) {
+            $path = implode(' -> ', array_keys($resolving)) . ' -> ' . $service;
             throw new CircularDependencyException("Circular dependency detected: {$path}");
         }
 
-        $this->resolving[$service] = true;
+        $resolving[$service] = true;
 
         $entry = $this->manifest['services'][$service]
             ?? throw new KernelException(
@@ -61,10 +69,10 @@ final class DependencyGraphCalculator
             );
 
         foreach ($entry['requires'] ?? [] as $dep) {
-            $this->visit($dep);
+            $this->visit($dep, $resolved, $resolving);
         }
 
-        unset($this->resolving[$service]);
-        $this->resolved[$service] = $entry;
+        unset($resolving[$service]);
+        $resolved[$service] = $entry;
     }
 }
