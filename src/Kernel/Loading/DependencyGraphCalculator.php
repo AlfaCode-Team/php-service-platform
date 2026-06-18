@@ -17,12 +17,26 @@ final class DependencyGraphCalculator
         private readonly array $manifest
     ) {}
 
-    /** @throws CircularDependencyException|KernelException */
-    public function resolve(string $service): DependencyGraph
+    /**
+     * Resolve the dependency graph for a service, optionally seeding extra
+     * module domains the matched route declared in its own requires[].
+     *
+     * The synthetic '__project__' scope carries no requires of its own, so a
+     * project route opts into specific plugins per-route via $additional rather
+     * than loading them for every project page. Each extra domain is resolved
+     * (with its transitive requires) into the same graph.
+     *
+     * @param list<string> $additional extra module domains to pull into the graph
+     * @throws CircularDependencyException|KernelException
+     */
+    public function resolve(string $service, array $additional = []): DependencyGraph
     {
         $this->resolved = [];
         $this->resolving = [];
         $this->visit($service);
+        foreach ($additional as $dep) {
+            $this->visit($dep);
+        }
 
         return new DependencyGraph($this->resolved);
     }

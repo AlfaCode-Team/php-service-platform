@@ -16,7 +16,7 @@ final class TaskController
         private readonly ViewRendererContract $view,
     ) {
     }
-
+ 
     public function index(Request $request): Response
     {
         return Response::html(

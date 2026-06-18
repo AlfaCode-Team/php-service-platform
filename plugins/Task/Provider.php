@@ -15,6 +15,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
 use Plugins\Task\API\Contracts\TaskServiceContract;
 use Plugins\Task\Application\Services\TaskService;
+use Plugins\Task\Infrastructure\Http\Stages\RequireJsonStage;
 use Plugins\Task\Infrastructure\Persistence\TaskRepository;
 use Plugins\View\API\Contracts\ViewRendererContract;
 
@@ -59,5 +60,8 @@ final class Provider implements ModuleContract
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
     {
+        // A plugin can publish its OWN route-filter aliases. Routes in any
+        // module.json / proj.json may then opt in with "filters": ["json"].
+        $http->filter('json', RequireJsonStage::class);
     }
 }
