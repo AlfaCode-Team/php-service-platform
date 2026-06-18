@@ -50,12 +50,72 @@ final class LocalStorageAdapter implements StoragePort
         }
         try {
             flock($handle, LOCK_EX);
-            fwrite($handle, $contents);
+            $expected = strlen($contents);
+            $written  = fwrite($handle, $contents);
+            // Detect short writes (e.g. disk full) before publishing the file.
+            if ($written === false || $written !== $expected) {
+                throw new \RuntimeException("Storage: failed to write file [{$relative}] (disk full?).");
+            }
             fflush($handle);
+            // Durability: flush kernel buffers to disk so the rename publishes
+            // a fully-persisted file even across a crash/power loss.
+            if (function_exists('fsync')) {
+                @fsync($handle);
+            }
             flock($handle, LOCK_UN);
-        } finally {
+        } catch (\Throwable $e) {
             fclose($handle);
+            @unlink($temp);
+            throw $e;
         }
+        fclose($handle);
+
+        if (!rename($temp, $absolute)) {
+            @unlink($temp);
+            throw new \RuntimeException("Storage: unable to persist file [{$relative}].");
+        }
+
+        chmod($absolute, $visibility === 'public' ? 0644 : 0600);
+
+        return $relative;
+    }
+
+    public function storeStream($resource, string $filename, string $path = '', string $visibility = 'private'): string
+    {
+        if (!is_resource($resource)) {
+            throw new \InvalidArgumentException('Storage: storeStream expects a readable resource.');
+        }
+
+        $relative = $this->join($path, $filename);
+        $absolute = $this->absolute($relative);
+
+        $dir = dirname($absolute);
+        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new \RuntimeException("Storage: unable to create directory [{$dir}].");
+        }
+
+        // Atomic write: stream-copy to a temp file in the same dir, then rename.
+        $temp   = $dir . '/.' . bin2hex(random_bytes(8)) . '.tmp';
+        $handle = fopen($temp, 'wb');
+        if ($handle === false) {
+            throw new \RuntimeException("Storage: unable to open temp file in [{$dir}].");
+        }
+        try {
+            flock($handle, LOCK_EX);
+            if (stream_copy_to_stream($resource, $handle) === false) {
+                throw new \RuntimeException("Storage: failed to stream file [{$relative}] (disk full?).");
+            }
+            fflush($handle);
+            if (function_exists('fsync')) {
+                @fsync($handle);
+            }
+            flock($handle, LOCK_UN);
+        } catch (\Throwable $e) {
+            fclose($handle);
+            @unlink($temp);
+            throw $e;
+        }
+        fclose($handle);
 
         if (!rename($temp, $absolute)) {
             @unlink($temp);
@@ -78,6 +138,19 @@ final class LocalStorageAdapter implements StoragePort
             throw new \RuntimeException("Storage: unable to read file [{$path}].");
         }
         return $contents;
+    }
+
+    public function readStream(string $path)
+    {
+        $absolute = $this->absolute($path);
+        if (!is_file($absolute)) {
+            throw new \RuntimeException("Storage: file [{$path}] not found.");
+        }
+        $handle = fopen($absolute, 'rb');
+        if ($handle === false) {
+            throw new \RuntimeException("Storage: unable to open file [{$path}].");
+        }
+        return $handle;
     }
 
     public function temporaryUrl(string $path, int $expiresInSeconds = 3600): string

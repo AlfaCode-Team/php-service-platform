@@ -24,11 +24,7 @@ final class PageflowResponderTest extends TestCase
     /** @param array<string,string> $headers */
     private function request(array $headers = [], string $method = 'GET', string $path = '/users'): Request
     {
-        $request = new Request(method: $method, path: $path);
-        foreach ($headers as $name => $value) {
-            $request = $request->withHeader($name, $value);
-        }
-        return $request;
+        return Request::build(method: $method, path: $path, headers: $headers);
     }
 
     public function test_full_load_returns_html_shell_with_data_page(): void
