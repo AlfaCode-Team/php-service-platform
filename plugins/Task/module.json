@@ -7,12 +7,14 @@
     "requires": ["database.query","view.rendering"],
     "exposes": ["Plugins\\Task\\API\\Contracts\\TaskServiceContract"],
 
+    "views": "resources/views",
+
     "routes": [
         { "method": "GET",    "path": "/api/tasks",      "handler": "Plugins\\Task\\Infrastructure\\Http\\TaskController@index"   },
-        { "method": "POST",   "path": "/api/tasks",      "handler": "Plugins\\Task\\Infrastructure\\Http\\TaskController@create"  },
+        { "method": "POST",   "path": "/api/tasks",      "handler": "Plugins\\Task\\Infrastructure\\Http\\TaskController@create", "filters": ["auth", "throttle:60,1"] },
         { "method": "GET",    "path": "/api/tasks/{id}", "handler": "Plugins\\Task\\Infrastructure\\Http\\TaskController@show"    },
-        { "method": "POST",   "path": "/api/tasks/{id}/complete", "handler": "Plugins\\Task\\Infrastructure\\Http\\TaskController@complete" },
-        { "method": "DELETE", "path": "/api/tasks/{id}", "handler": "Plugins\\Task\\Infrastructure\\Http\\TaskController@destroy" }
+        { "method": "POST",   "path": "/api/tasks/{id}/complete", "handler": "Plugins\\Task\\Infrastructure\\Http\\TaskController@complete", "filters": ["auth"] },
+        { "method": "DELETE", "path": "/api/tasks/{id}", "handler": "Plugins\\Task\\Infrastructure\\Http\\TaskController@destroy", "filters": ["auth"] }
     ],
 
     "emits":   ["task.created"],

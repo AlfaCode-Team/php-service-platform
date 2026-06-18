@@ -112,11 +112,21 @@ final class EntryHelpers
                 || !isset($route['method'], $route['path'], $route['handler'])) {
                 continue;
             }
-            $routes[] = [
+            $entry = [
                 'method'  => (string) $route['method'],
                 'path'    => (string) $route['path'],
                 'handler' => (string) $route['handler'],
             ];
+            // Optional per-route declarations passed through to the route-manifest
+            // compiler: filters[] (auth, throttle, …) and requires[] (plugin
+            // domains to seed into this route's dependency graph).
+            if (isset($route['filters'])) {
+                $entry['filters'] = $route['filters'];
+            }
+            if (isset($route['requires'])) {
+                $entry['requires'] = $route['requires'];
+            }
+            $routes[] = $entry;
         }
 
         return $routes;
