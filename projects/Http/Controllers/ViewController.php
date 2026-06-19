@@ -8,7 +8,9 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Contracts\RequestAware;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Response;
 use Plugins\View\API\Contracts\ViewRendererContract;
 use Project\Http\Controllers\Concerns\InteractsWithCookies;
+use Project\Http\Controllers\Concerns\InteractsWithProject;
 use Project\Http\Controllers\Concerns\InteractsWithSession;
+use Project\Http\Controllers\Concerns\InteractsWithStorage;
 
 /**
  * Base controller for HTML / view endpoints.
@@ -34,7 +36,9 @@ use Project\Http\Controllers\Concerns\InteractsWithSession;
 abstract class ViewController implements RequestAware
 {
     use InteractsWithCookies;
+    use InteractsWithProject;
     use InteractsWithSession;
+    use InteractsWithStorage;
 
     public function __construct(
         protected readonly ViewRendererContract $renderer,

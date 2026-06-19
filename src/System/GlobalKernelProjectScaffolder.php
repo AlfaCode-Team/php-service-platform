@@ -432,7 +432,10 @@ return Kernel::configure()
         CachePort::class => new InMemoryCache(),
     ])
     ->withSecurity([
-        new CsrfTokenLayer(exemptPaths: ['/api']),
+        new CsrfTokenLayer(
+            bindCookie:  env('SESSION_COOKIE') ?: 'hkm_session',
+            exemptPaths: ['/api'],
+        ),
     ]);
 PHP;
     }
