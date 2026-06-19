@@ -9,7 +9,9 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Request;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Response;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
 use Project\Http\Controllers\Concerns\InteractsWithCookies;
+use Project\Http\Controllers\Concerns\InteractsWithProject;
 use Project\Http\Controllers\Concerns\InteractsWithSession;
+use Project\Http\Controllers\Concerns\InteractsWithStorage;
 
 /**
  * Base controller for JSON / API endpoints.
@@ -27,7 +29,9 @@ use Project\Http\Controllers\Concerns\InteractsWithSession;
 abstract class ApiController implements RequestAware
 {
     use InteractsWithCookies;
+    use InteractsWithProject;
     use InteractsWithSession;
+    use InteractsWithStorage;
 
     /** 200 OK with a `data` envelope. */
     protected function ok(mixed $data = null, int $status = 200): Response

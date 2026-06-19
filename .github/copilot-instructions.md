@@ -197,7 +197,13 @@ return Kernel::configure()
     ->withSecurity([
         new FirewallLayer(blocklist: config('security.blocklist')),
         new RateLimiterLayer(store: CachePort::class, limits: config('security.limits')),
-        new CsrfTokenLayer(exemptPaths: config('security.csrf_exempt')),
+        new CsrfTokenLayer(                                  // HMAC token (WP-nonce style), NOT double-submit
+            bindCookie:  'hkm_session',                     // pin to HttpOnly cookie's raw value ('' = unbound)
+            lifetime:    43200,                             // SECONDS; make()/valid() lifetime MUST match
+            exemptPaths: config('security.csrf_exempt'),    // e.g. ['/api']
+        ),
+        // CSRF: stateless HMAC(APP_KEY) token — nothing stored, no cookie trusted, empty APP_KEY fail-closes.
+        // Mint with CsrfTokenLayer::make(); verify out-of-band with ::valid(). Guide: docs/ai-context/21_CSRF.md
         // JWT / API-key / session auth: provided by your AuthModule (registers a layer in boot()).
     ])
     ->withErrorPipeline(
@@ -976,6 +982,7 @@ First-party plugins (`plugins/`, namespace `Plugins\`; see `docs/ai-context/20_F
 | Session / Cookie / RedisCache | session/cookies/cache | `SessionPort` (file/array/cookie) / `CookieJar` / `CachePort`+`QueuePort` | essential |
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
 | Pageflow | `http.pageflow` | `PageflowResponder` (SPA bridge) | on-demand |
+| SiteSEO | `seo.management` | `SeoServiceContract` — Open Graph/Twitter, Schema.org JSON-LD, sitemaps, robots.txt, sitemap ping + **IndexNow** (`indexNow()` auto-batches 10k, lazy iterable, dry-run; `SearchEngineGateway` → `HttpClientPort`). Bg job `seo.indexnow` + `UrlPublishedIntegrationEvent`/`EnqueueIndexNowListener` for index-on-publish | on-demand (`requires:["http.client"]`) |
 
 View notes: no globals (paths/extensions/decorators/escaper injected), request-scoped
 (no cross-request leak under OpenSwoole), `SidebarManager` icon cache is instance-scoped
@@ -1008,9 +1015,18 @@ NOT kernel — views/cookies are plugin concerns):
   `notFound`, `forbidden`, `unprocessable`, `identity`); pure kernel types.
 - `ViewController` — HTML helpers (`view`, `viewNotFound`, `redirect`, `back`); injects
   `ViewRendererContract`.
-- Both `use InteractsWithCookies` (wraps every public `CookieJar` method, no `$request` arg)
-  and `InteractsWithSession` (`sessionGet/Put/Has/Pull/Forget`, `flash`, `csrfToken`,
-  `regenerateSession`, `invalidateSession`). Both share the `HasRequest` concern.
+- All four concerns compose via the shared `HasRequest` concern (flattened once, no conflict):
+  - `InteractsWithCookies` — wraps every public `CookieJar` method, no `$request` arg.
+  - `InteractsWithSession` — `sessionGet/Put/Has/Pull/Forget`, `flash`, `csrfToken`,
+    `regenerateSession`, `invalidateSession`.
+  - `InteractsWithProject` — reads `DomainContext` off the request (`attribute('domain')`):
+    `project`/`requireProject`, `projectName/Path/Face/Host`,
+    `isAdmin/isApi/isProject/isPublic/isPlatformOnly`, `projectFeatures/hasFeature/feature`.
+    Degrades to null/false/`[]` with no context (CLI/worker).
+  - `InteractsWithStorage` — wraps the on-demand `StoragePort` (local disk or S3):
+    `storage/storageAvailable`, `storeUpload`/`storeUploadAs`/`storeBase64`/`storeContents`,
+    `readFile/fileExists/fileUrl/deleteFile/copyFile/moveFile`. Route MUST declare
+    `"requires": ["storage.local"]`; read helpers return null/false when absent, write helpers throw.
 
 Both implement the kernel contract `Kernel\Http\Contracts\RequestAware`
 (`setRequest(Request): static`). `ExecuteStage` calls `setRequest($request)` then invokes a

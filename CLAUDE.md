@@ -116,7 +116,7 @@ sentinel/kernel/
     │   └── Layers/
     │       ├── FirewallLayer.php          ← IP blocklist/allowlist (cheapest — runs first)
     │       ├── RateLimiterLayer.php       ← sliding window counter via CachePort
-    │       └── CsrfTokenLayer.php         ← stateless double-submit cookie CSRF check
+    │       └── CsrfTokenLayer.php         ← stateless HMAC-signed token CSRF check (WordPress-nonce style)
     │
     │   (JWT / API-key / session authentication is provided by a project's
     │    Auth module — the kernel does not ship a token validator.)
@@ -418,11 +418,18 @@ return Kernel::configure()
     ->withSecurity([
         new FirewallLayer(blocklist: config('security.blocklist')),            // 1st — cheapest
         new RateLimiterLayer(store: CachePort::class, limits: config('security.limits')), // 2nd
-        new CsrfTokenLayer(                                                   // 3rd — stateless
-            cookieName:   'XSRF-TOKEN',
+        new CsrfTokenLayer(                                  // 3rd — stateless HMAC token (WP-nonce style)
+            // secret:    null,           // defaults to env('APP_KEY'); empty = fail-closed (deny)
             headerName:   'X-CSRF-Token',
-            exemptPaths:  config('security.csrf_exempt'),  // e.g. ['/api/webhooks']
+            formField:    '_csrf_token',
+            bindCookie:   'hkm_session',  // pin token to this HttpOnly cookie's raw value ('' = unbound)
+            lifetime:     43200,          // SECONDS (12h); make()/valid() lifetime MUST match this
+            exemptPaths:  config('security.csrf_exempt'),  // e.g. ['/api', '/api/webhooks']
         ),
+        // CSRF here is HMAC-signed, NOT plain double-submit: nothing is stored and
+        // no cookie value is trusted as the token, so cookie-injection cannot bypass
+        // it. Mint with CsrfTokenLayer::make(), verify out-of-band with ::valid().
+        // Full guide: docs/ai-context/21_CSRF.md
         // Token/JWT verification: provide via your AuthModule (Provider::boot()
         // registers a layer hook). The kernel intentionally ships no JWT code.
     ])
@@ -1382,9 +1389,23 @@ Project layer, NOT kernel — view rendering + cookies are plugin concerns.
   `csrfToken`, `regenerateSession` (call after login — fixation defence),
   `invalidateSession` (logout), `session`. No-ops gracefully when the Session
   plugin is absent.
-- `InteractsWithCookies` and `InteractsWithSession` share the `HasRequest`
-  concern (holds `$request` + `setRequest()`), flattened once so both traits
-  compose on one controller without conflict.
+- Both `use InteractsWithProject` — reads the `DomainContext` off the request
+  (`Request::attribute('domain')`, never the container): `project`,
+  `requireProject`, `projectName`, `projectPath`, `projectFace`, `projectHost`,
+  `isAdmin`/`isApi`/`isProject`/`isPublic`/`isPlatformOnly`, `projectFeatures`,
+  `hasFeature`, `feature`. Read helpers degrade to null/false/`[]` when no
+  context is attached (CLI/worker).
+- Both `use InteractsWithStorage` — wraps the on-demand `StoragePort`
+  (driver-agnostic, local disk or S3): `storage`, `storageAvailable`,
+  `storeUpload` (random name), `storeUploadAs` (keeps client name), `storeBase64`,
+  `storeContents`, `readFile`, `fileExists`, `fileUrl` (signed temp URL),
+  `deleteFile`, `copyFile`, `moveFile`. A route using these MUST declare
+  `"requires": ["storage.local"]`. Read helpers return null/false when Storage is
+  absent; write helpers throw (a missing backing store is a real fault).
+- `InteractsWithCookies`, `InteractsWithSession`, `InteractsWithProject` and
+  `InteractsWithStorage` share the `HasRequest` concern (holds `$request` +
+  `setRequest()`), flattened once so all the traits compose on one controller
+  without conflict.
 
 ### RequestAware — kernel contract, actions take route params ONLY
 
@@ -1847,9 +1868,10 @@ Local application-specific modules live in `plugins/`, NOT `projects/`.
 
 **Registered plugins:**
 
-| Plugin | Namespace        | Solves            |
-|--------|------------------|-------------------|
-| Task   | `Plugins\Task\`  | `task.management` |
+| Plugin  | Namespace          | Solves            |
+|---------|--------------------|-------------------|
+| Task    | `Plugins\Task\`    | `task.management` |
+| SiteSEO | `Plugins\SiteSEO\` | `seo.management`  |
 
 **Infrastructure plugins (port adapters / pipeline stages):**
 
@@ -1866,6 +1888,71 @@ Local application-specific modules live in `plugins/`, NOT `projects/`.
 **Adding a new plugin:** create `plugins/{Name}/`, implement all GDA layers under
 `Plugins\{Name}\`, then add `Plugins\{Name}\Provider::class` to the relevant
 `projects/{project}/bootstrap/app.php`.
+
+---
+
+## SEO, SITEMAPS & INDEXING (plugin + Project-layer support)
+
+The **SiteSEO** plugin (`Plugins\SiteSEO\`, solves `seo.management`, on-demand,
+`requires: ["http.client"]`) is a full SEO toolkit; a set of **Project-layer**
+helpers under `Project\Support\Seo\` + controller traits make it ergonomic. The
+toolkit classes autoload directly, so sitemap/Open-Graph/JSON-LD building needs
+NO module load — only network actions (ping / IndexNow) need the module
+(`requires: ["seo.management"]`) because they go through `HttpClientPort`.
+
+### Published contract — `Plugins\SiteSEO\API\Contracts\SeoServiceContract`
+`openGraph()`, `schema()`, `sitemap()`, `robots()`, `pingSitemap()`,
+`submitUrls()` (legacy), `indexNow(host,key,keyLocation,urls,endpoints,dryRun)`
+(auto-batches 10k, lazy iterable, dry-run), `indexNowChunks()` (lazy batch
+generator). Outbound HTTP lives ONLY in `Infrastructure/Gateways/SearchEngineGateway`
+(`HttpClientPort`) — never raw cURL.
+
+### Project-layer support (`Project\Support\Seo\`) — reusable, DI-free
+| Class | Role |
+|---|---|
+| `RouteCatalog` | Reads `var/cache/manifests/route-manifest.php`; `publicPaths()` = public static GET pages (drops `{param}`, auth-gated, `/api`, SEO endpoints) |
+| `SitemapGenerator` | Small/route-derived sitemaps via the toolkit `SitemapBuilder` (one `<urlset>`, ≤30k); `toXml()` / `save($dir)` |
+| `SitemapStreamWriter` | **Enterprise**: streams an `iterable` straight to split child files + index, **O(1) memory** (no DOM), auto-split at 50k, optional gzip. For millions of URLs |
+| `SitemapUrlProvider` (iface) + `SitemapSource` | Expand a dynamic route (`/blog/{slug}`) from the DB via a keyset-cursor **generator**; `SitemapSource` stitches static + provider URLs and reports `uncoveredDynamicRoutes()` |
+| `RichGraph` | Schema.org JSON-LD **`@graph`** for Google rich results — `organization`, `website` (SearchAction), `webPage`, `breadcrumb`, `article`/`newsArticle`/`blogPosting`, `product`, `book`, `course`, `realEstate`, `pageantEdition`/`awardEdition`/`contestant` (Event+Person), `faq`. Nodes cross-link by `@id` |
+| `SeoHead` | One-call `<head>`: `<title>`, description, **canonical**, **robots**, **hreflang**/x-default, + attached OG and JSON-LD |
+| `IndexNowKey` | IndexNow key value object: `value()`, `fileContents()`, `location($base)` (keyLocation) |
+| `FileQueue` (in `Project\Infrastructure\`) | Dependency-free cross-process `QueuePort` (JSON-lines + locked `pop()`) so the worker drains jobs without Redis |
+
+### Controller traits (`Project\Http\Controllers\Concerns\`)
+- `InteractsWithSeo` — `siteBaseUrl()`, `routeCatalog()`, `sitemap()/sitemapFromRoutes()`,
+  `openGraph($type,$title)`, `ogImage($url,$w,$h,$alt)`, `richGraph()`, `robots()`.
+- `InteractsWithGraphSeo` — composes the above + `graph()` and `seoHead()`.
+
+### Background indexing (job + listener)
+- Job `Plugins\SiteSEO\Application\Jobs\IndexNowJob` (module.json `jobs[]`,
+  name `seo.indexnow`, queue `indexing`) submits ONE ≤10k batch; throws → worker
+  retry; honours a `dryRun` payload flag. Bound in `Provider::register()`.
+- Dispatch = chunk a URL stream with `indexNowChunks()` and `QueuePort::push('seo.indexnow', …)`
+  per batch (flat memory).
+- **Index-on-publish**: emit `Plugins\SiteSEO\API\IntegrationEvents\UrlPublishedIntegrationEvent`
+  after a save commits; the SEO module subscribes `EnqueueIndexNowListener`
+  (`Provider::boot()`) which enqueues `seo.indexnow`. Because the EventBus
+  resolves listeners from the **CoreContainer** (and `has()` is bound-only), the
+  **project binds the listener with its `QueuePort`** in `bootstrap/app.php` —
+  the plugin declares the subscription, the project supplies infrastructure.
+- env: `INDEXNOW_KEY` (required to submit — listener no-ops without it),
+  `INDEXNOW_LIVE` (truthy ⇒ real submit, else enqueued dry run).
+
+### Rules
+```
+✓ Sitemap/OG/JSON-LD building is DI-free (toolkit autoloads) — no module needed.
+✓ Network actions (ping, IndexNow) need requires:["seo.management"] → HttpClientPort.
+✓ Huge sitemaps → SitemapStreamWriter from a generator (keyset DB cursor), never an array/DOM.
+✓ Dynamic routes get a SitemapUrlProvider; SitemapSource.uncoveredDynamicRoutes() guards omissions.
+✓ One JSON-LD @graph per page (RichGraph), nodes linked by @id — not disconnected blobs.
+✗ Raw cURL for ping/IndexNow — always SearchEngineGateway + HttpClientPort.
+✗ Buffering a whole catalogue in memory to build a sitemap or submit IndexNow.
+✗ Binding an EventBus listener that needs a port WITHOUT the project binding it in CoreContainer.
+```
+
+Full live demos (all 13+ content types, streaming, jobs, index-on-publish) live
+in `projects/.../` and the `psp-shop` standalone project.
 
 ---
 
@@ -1917,6 +2004,7 @@ For deeper context on any layer, reference:
 - `@docs/ai-context/07_CONTROLLER.md`         — HTTP controllers, DTO validation pattern
 - `@docs/ai-context/08_EVENTS.md`             — domain vs integration events, EventBus
 - `@docs/ai-context/09_SECURITY.md`           — SecurityGateway, Identity, JWT internals
+- `@docs/ai-context/21_CSRF.md`               — CsrfTokenLayer: HMAC token CSRF, framework wiring + usage
 - `@docs/ai-context/10_TESTING.md`            — test patterns, port fakes, service tests
 - `@docs/ai-context/13_ANTIPATTERNS.md`       — 12 wrong/correct code pairs
 - `@docs/ai-context/16_PLUGINS.md`            — plugins folder convention, local module checklist

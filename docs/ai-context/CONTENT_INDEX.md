@@ -195,12 +195,27 @@ Contains:
 - SecurityLayerContract interface
 - SecurityVerdict (allow, deny, methods)
 - Identity value object (final readonly, hasRole, hasPermission, isGuest)
-- Built-in security layers (Firewall, RateLimiter, TokenValidator)
+- Built-in security layers (Firewall, RateLimiter, CsrfToken, TokenValidator)
 - Writing a custom security layer (complete example)
 - JWT token lifecycle (login → validate → refresh)
 - Rate limit configuration (config/security.php complete example)
 - Service-level authorization pattern (RBAC + ABAC combined)
 - AI instructions for security code
+
+---
+
+## 21_CSRF.md
+**USE: When wiring CSRF protection or rendering forms / SPA tokens**
+
+Contains:
+- HMAC token model (WordPress-nonce style) vs plain double-submit — why it's stronger
+- Token format (tick | binding | action) and the seconds-based lifetime / tick math
+- CsrfTokenLayer constructor + framework-level withSecurity() wiring (all params)
+- Verification flow through the SecurityGateway (fail-closed on empty APP_KEY)
+- Static API: CsrfTokenLayer::make() (mint) and ::valid() (out-of-band check)
+- The binding gotcha (raw cookie read, raw:true cookies, mint-with-value-you-set)
+- End-to-end controller + layout `<meta>` + form/fetch example
+- AI / contributor rules for CSRF code
 
 ---
 

@@ -124,11 +124,37 @@ All service-level authorization uses `$this->identity->hasPermission()` or `->ha
 // Returns: X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After headers
 ```
 
-### TokenValidatorLayer
+### CsrfTokenLayer
+
+```php
+// Stateless HMAC-signed CSRF token (the WordPress-nonce model) — NOT plain
+// double-submit. No token is stored and NO cookie value is trusted as the
+// token; a valid token cannot be forged without APP_KEY, so cookie injection
+// (sibling sub-domain / MITM) cannot bypass it.
+//
+//   token = tick . "." . hmac(APP_KEY, tick|binding|action)
+//
+// Safe methods (GET/HEAD/OPTIONS) + exemptPaths bypass; an empty APP_KEY
+// fail-closes (denies). lifetime is in SECONDS (default 43200 = 12h).
+// Mint with CsrfTokenLayer::make(), verify out-of-band with ::valid().
+//
+// Full guide + framework-level usage: docs/ai-context/21_CSRF.md
+new CsrfTokenLayer(
+    headerName:  'X-CSRF-Token',
+    formField:   '_csrf_token',
+    bindCookie:  'hkm_session',   // pin to the HttpOnly session cookie ('' = unbound)
+    lifetime:    43200,           // seconds
+    exemptPaths: ['/api'],        // machine-to-machine endpoints with their own auth
+);
+```
+
+### TokenValidatorLayer (project-provided — Auth module)
+
 ```php
 // Validates JWT or API key. Builds Identity from claims.
 // Routes in config("security.public_routes") bypass this layer.
 // HMAC signature verification — timing-safe hash_equals()
+// NOTE: the kernel ships NO JWT code — an Auth module registers this layer.
 ```
 
 ---

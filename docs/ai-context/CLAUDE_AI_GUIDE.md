@@ -83,6 +83,7 @@ Expected Claude response: Claude acknowledges the AlfacodeTeam PhpServicePlatfor
 | Writing a controller | `07_CONTROLLER.md` |
 | Working with events | `08_EVENTS.md` |
 | Security / authentication | `09_SECURITY.md` |
+| CSRF protection (tokens, forms) | `21_CSRF.md` |
 | Writing tests | `10_TESTING.md` |
 | Writing background jobs | `12_WORKER.md` |
 | Reviewing code / debugging | `13_ANTIPATTERNS.md` |

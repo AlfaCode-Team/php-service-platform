@@ -47,6 +47,7 @@ Canonical install/distribution guide:
 | `18_MIGRATIONS.md` | LetMigrate engine, migrations, seeders | When writing migrations or schema changes |
 | `19_DATABASE.md` | Multi-driver Database module, DatabasePort adapter, connections | When configuring databases or writing repositories |
 | `20_FIRST_PARTY_PLUGINS.md` | Ported plugins: Authorization, Auth, SocialAuth, SecurityFilters, Crypto, Validation, I18n, Support, Mail, Pageflow, DevTools | When using auth, crypto, validation, i18n, collections, mail, or the SPA bridge |
+| `21_CSRF.md` | CsrfTokenLayer: HMAC-signed CSRF tokens (WP-nonce style), framework wiring, mint/verify usage | When wiring CSRF protection or rendering forms/SPA tokens |
 
 ---
 
