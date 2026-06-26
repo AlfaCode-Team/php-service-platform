@@ -15,7 +15,13 @@ interface AuthServiceContract
     /**
      * Issue a signed JWT for a user.
      *
-     * @param array{roles?:list<string>,permissions?:list<string>,tenant?:string} $claims
+     * Tenant context is carried by the `tnt` claim (multi-tenant control plane).
+     * Omit it (or pass '') for a login/unscoped token that routes to the central
+     * connection; set it ONLY after verifying membership in the central
+     * `user_tenants` table at tenant-selection time. `tenant` is accepted as a
+     * legacy alias.
+     *
+     * @param array{roles?:list<string>,permissions?:list<string>,tnt?:string,tenant?:string} $claims
      */
     public function issueJwt(string $userId, array $claims = [], int $ttlSeconds = 3600): string;
 

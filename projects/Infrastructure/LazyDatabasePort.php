@@ -48,9 +48,14 @@ final class LazyDatabasePort implements DatabasePort
         return $this->port()->execute($sql, $params);
     }
 
-    public function lastInsertId(): string
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int
     {
-        return $this->port()->lastInsertId();
+        return $this->port()->upsert($table, $values, $conflictColumns, $updateColumns);
+    }
+
+    public function lastInsertId(?string $sequence = null): string
+    {
+        return $this->port()->lastInsertId($sequence);
     }
 
     public function beginTransaction(): void
