@@ -172,6 +172,13 @@ Migration Schema API notes (avoid the common mistakes that broke the bundled mig
 - Seeder files may EITHER `return new class implements SeederInterface {}` OR declare a
   named `final class <FileName> implements SeederInterface {}` (the `make:seeder` scaffold).
 - Seeding runs via `db:seed` (optionally `db:seed --class <Name>`); there is no `seed:*` group.
+- Table-level options are Blueprint methods: `$t->engine('InnoDB')`, `$t->charset('utf8mb4')`,
+  `$t->collation('utf8mb4_0900_ai_ci')`, `$t->rowFormat('DYNAMIC')`, `$t->comment('…')`. These
+  (ROW_FORMAT / ENGINE / CHARSET / COLLATE / COMMENT) are emitted only by the MySQL grammar;
+  PostgreSQL / SQLite / SQL Server ignore them (they override `compileTableOptions()` to return '').
+- CHECK constraints: `$t->check('status between 1 and 3', 'chk_status')` — a raw boolean SQL
+  expression (unquoted column names) + optional name. Portable: emitted inline in the CREATE
+  TABLE body on all four drivers. There is no per-column `->check()` modifier — it is table-level.
 
 **AbstractCommand API** (not Symfony — do not mix these up):
 - `configure()` — set `$this->name`, `$this->description`; call `addArgument()` / `addOption()`
@@ -489,6 +496,14 @@ interface SecurityLayerContract
 // Verdict:
 SecurityVerdict::allow($request)          // proceed, optional Identity attached
 SecurityVerdict::deny(401, 'reason')      // stop, return HTTP error immediately
+
+// Multi-tenant context: JwtAuthLayer sets Identity.tenantId from the signed
+// `tnt` claim (legacy `tenant`), default '' = unscoped → central connection. A
+// non-empty tenant is routed to its isolated DB by Plugins\Tenancy
+// TenantContextStage (after.load, rebinds DatabasePort). Mint a tenant-scoped
+// token only after verifying central user_tenants membership; re-check per
+// request. Control-plane plugins (User, Auth) pin to the ConnectionManager
+// default (central) so identity I/O never hits a tenant DB. See 09_SECURITY.md.
 
 // Identity — immutable, set once by your AuthModule's security layer:
 final readonly class Identity
@@ -889,9 +904,13 @@ interface DatabasePort {
     public function query(string $sql, array $params = []): array;
     public function queryOne(string $sql, array $params = []): ?array;
     public function execute(string $sql, array $params = []): int;
+    // Portable, atomic upsert (MySQL ON DUPLICATE KEY / PostgreSQL+SQLite ON CONFLICT).
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int;
+    public function lastInsertId(?string $sequence = null): string;
     public function beginTransaction(): void;
     public function commit(): void;
     public function rollback(): void;
+    public function inTransaction(): bool;
 }
 
 interface CachePort {
@@ -983,6 +1002,7 @@ First-party plugins (`plugins/`, namespace `Plugins\`; see `docs/ai-context/20_F
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
 | Pageflow | `http.pageflow` | `PageflowResponder` (SPA bridge) | on-demand |
 | SiteSEO | `seo.management` | `SeoServiceContract` — Open Graph/Twitter, Schema.org JSON-LD, sitemaps, robots.txt, sitemap ping + **IndexNow** (`indexNow()` auto-batches 10k, lazy iterable, dry-run; `SearchEngineGateway` → `HttpClientPort`). Bg job `seo.indexnow` + `UrlPublishedIntegrationEvent`/`EnqueueIndexNowListener` for index-on-publish | on-demand (`requires:["http.client"]`) |
+| Tenancy | `tenancy.routing` | Multi-tenant control plane: `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract`. Maps `Identity.tenantId` → isolated tenant `DatabasePort`, rebinds per request (`TenantContextStage` @ `after.load`). Fail-closed + per-tenant circuit breaker; central `tenants`/`user_tenants`/`tenant_invitations`/`refresh_tokens`/`audit_log`; database-per-tenant. Selection flow `GET /api/me/tenants` + `POST /api/tenants/{id}/select` (re-verifies membership, mints `tnt` token); email invitations → seat; one-time-use refresh rotation (re-checks membership, mints access JWT). CLI `tenants:create`/`tenants:migrate` | essential (`requires:["database.management","auth.identity","user.management"]`) |
 
 View notes: no globals (paths/extensions/decorators/escaper injected), request-scoped
 (no cross-request leak under OpenSwoole), `SidebarManager` icon cache is instance-scoped
@@ -1006,6 +1026,27 @@ Storage notes: config in `plugins/Storage/config/storage.php` (env-driven; proje
 `STORAGE_S3_KEY`/`STORAGE_S3_SECRET` (leave empty on EC2/ECS/EKS → AWS IAM role chain),
 `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PATH_STYLE`. Local writes are atomic + fsync'd with
 short-write detection; use `storeStream()`/`readStream()` for large blobs.
+
+SEO notes (SiteSEO + `Project\Support\Seo\` + traits `InteractsWithSeo` /
+`InteractsWithGraphSeo`): sitemap / Open Graph / Schema.org JSON-LD building is
+DI-free (toolkit autoloads — NO module needed); only network actions (sitemap
+ping, IndexNow) need `requires:["seo.management"]` (→ `HttpClientPort`, never raw
+cURL). `RouteCatalog` reads the route manifest for public static pages;
+`{param}` routes are expanded from the DB by a `SitemapUrlProvider` (keyset-cursor
+GENERATOR) and stitched by `SitemapSource` (`uncoveredDynamicRoutes()` guards
+omissions). Huge sitemaps → `SitemapStreamWriter` (stream→split files+index,
+O(1) memory, 50k split, gzip) — never an array/SimpleXML DOM. Rich results →
+one `RichGraph` `@graph` per page (org→website→webPage→breadcrumb→content node,
+linked by `@id`; types incl. article/news/blog, product, book, course,
+realEstate, pageant/award/contestant, faq). `SeoHead` renders the full `<head>`
+(canonical, robots, hreflang, OG, JSON-LD). IndexNow: `indexNow()` auto-batches
+10k from a lazy iterable (`dryRun` for previews); large runs enqueue one
+`seo.indexnow` job per batch via `QueuePort` (`FileQueue` is the no-Redis
+fallback). Index-on-publish: dispatch `UrlPublishedIntegrationEvent` after
+commit → `EnqueueIndexNowListener` enqueues. EventBus resolves listeners from the
+CoreContainer (`has()` is bound-only), so the PROJECT binds the listener with its
+`QueuePort` in `bootstrap/app.php`; the plugin only declares the subscription.
+Env: `INDEXNOW_KEY` (listener no-ops without it), `INDEXNOW_LIVE`.
 
 ## Base controllers + RequestAware
 

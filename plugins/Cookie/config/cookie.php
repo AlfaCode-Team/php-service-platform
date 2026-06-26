@@ -65,12 +65,24 @@ return [
     |--------------------------------------------------------------------------
     | Encryption Exemptions
     |--------------------------------------------------------------------------
-    | Comma-separated cookie NAMES whose values are stored as plaintext even
-    | when an EncryptionPort is bound (e.g. a JS-readable theme flag).
+    | Cookie NAMES whose values are stored as PLAINTEXT (never encrypted on
+    | write, never decrypted on read) even when an EncryptionPort is bound.
+    |
+    | Exempt a cookie when its raw value must stay stable and readable as-is:
+    |   - a JS-readable flag (theme, locale) the front-end reads directly;
+    |   - an opaque session/binding cookie that a pre-load security layer reads
+    |     RAW (e.g. CsrfTokenLayer's bindCookie). Encryption rotates the
+    |     ciphertext each response, which would break that binding — exempting
+    |     it keeps the value byte-stable across requests.
+    |
+    | The final list is the base names below MERGED with the comma-separated
+    | COOKIE_ENCRYPT_EXEMPT env var (so deployments can add more without code).
     */
-    'encrypt_exempt' => array_values(array_filter(array_map(
-        'trim',
+    'encrypt_exempt' => array_values(array_unique(array_filter(array_map('trim', array_merge(
+        [
+            // 'hkm_session', // CSRF bindCookie — must stay raw/stable for the security stage
+        ],
         explode(',', (string) (env('COOKIE_ENCRYPT_EXEMPT') ?: '')),
-    ))),
+    ))))),
 
 ];

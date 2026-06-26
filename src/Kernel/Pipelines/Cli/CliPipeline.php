@@ -128,7 +128,10 @@ final class CliPipeline
             $this->app->add($command);
         }
         foreach ($this->commandClasses as $commandClass) {
-            $this->app->add($this->instantiate($commandClass));
+            $command = $this->instantiate($commandClass);
+            if ($command !== null) {
+                $this->app->add($command);
+            }
         }
     }
 
@@ -186,15 +189,28 @@ final class CliPipeline
         }
     }
 
-    /** @param class-string<AbstractCommand> $commandClass */
-    private function instantiate(string $commandClass): AbstractCommand
+    /**
+     * @param class-string<AbstractCommand> $commandClass
+     *
+     * Returns null when the command's constructor dependencies cannot be
+     * resolved — e.g. a plugin command whose owning module is disabled / not in
+     * this request's graph. Such a command is simply skipped (not registered)
+     * so an unrelated command (migrate:reset, plugins disable, …) still runs.
+     * A single un-constructable command must NEVER crash the whole CLI.
+     */
+    private function instantiate(string $commandClass): ?AbstractCommand
     {
         // Prefer the container so commands with constructor dependencies are
         // autowired (bind-it reflects on concrete classes even when unbound).
-        // Fall back to direct construction for zero-dependency commands.
         try {
             $command = $this->core->make($commandClass);
         } catch (\Throwable) {
+            // The container could not build it. Only fall back to direct
+            // construction when the constructor has NO required parameters —
+            // otherwise `new $commandClass()` throws ArgumentCountError.
+            if ($this->hasRequiredConstructorArgs($commandClass)) {
+                return null;
+            }
             $command = new $commandClass();
         }
 
@@ -205,5 +221,17 @@ final class CliPipeline
         }
 
         return $command;
+    }
+
+    /** @param class-string $commandClass */
+    private function hasRequiredConstructorArgs(string $commandClass): bool
+    {
+        try {
+            $ctor = (new \ReflectionClass($commandClass))->getConstructor();
+        } catch (\ReflectionException) {
+            return false;
+        }
+
+        return $ctor !== null && $ctor->getNumberOfRequiredParameters() > 0;
     }
 }

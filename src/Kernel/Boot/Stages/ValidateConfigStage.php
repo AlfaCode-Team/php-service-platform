@@ -15,7 +15,8 @@ final class ValidateConfigStage implements BootStageContract
     public function __construct(
         private readonly array $moduleClasses,
         private readonly ManifestReader $reader = new ManifestReader(),
-    ) {}
+    ) {
+    }
 
     public function run(): void
     {
@@ -36,7 +37,10 @@ final class ValidateConfigStage implements BootStageContract
                 $type = is_array($spec) ? ($spec['type'] ?? 'string') : 'string';
                 $required = is_array($spec) ? ($spec['required'] ?? true) : true;
 
-                $value = $_ENV[$varName] ?? (getenv($varName) ?: null);
+                if (function_exists('env')) {
+                    $value = env($varName, getenv($varName) ?: null);
+                } else
+                    $value = $_ENV[$varName] ?? (getenv($varName) ?: null);
 
                 if ($value === null || $value === '') {
                     if ($required) {

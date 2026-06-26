@@ -117,6 +117,7 @@ of `CLAUDE.md` for on-demand vs essential:
 | Cookie | `http.cookies` | `CookieJar` + flush stage | essential |
 | RedisCache | `cache.redis` | `CachePort` + `QueuePort` | essential |
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
+| Tenancy | `tenancy.routing` | `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract` (database-per-tenant routing + selection/invitation/refresh-rotation flows; `requires: ["database.management","auth.identity","user.management"]`) | essential |
 
 ---
 

@@ -170,7 +170,7 @@ final class CsrfTokenLayer implements SecurityLayerContract
     {
         return self::valid($this->secret, $token, $binding, $this->lifetime);
     }
-
+ 
     /** token = tick . "." . hex(HMAC(secret, tick|binding|action)). Action rides after the sig for re-derivation. */
     private static function build(string $secret, int $tick, string $binding, string $action): string
     {

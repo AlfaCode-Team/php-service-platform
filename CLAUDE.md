@@ -124,7 +124,7 @@ sentinel/kernel/
     ├── Loading/
     │   ├── DependencyGraphCalculator.php  ← DFS over service-manifest.php
     │   ├── DependencyGraph.php            ← ordered module list
-    │   └── OnDemandLoader.php             ← register() then boot() per module
+    │   └── OnDemandLoader.php             ← register() per request (boot() runs once at materialize, not here)
     │
     ├── Container/
     │   ├── CoreContainer.php              ← app-lifetime: ports + kernel services
@@ -423,6 +423,9 @@ return Kernel::configure()
             headerName:   'X-CSRF-Token',
             formField:    '_csrf_token',
             bindCookie:   'hkm_session',  // pin token to this HttpOnly cookie's raw value ('' = unbound)
+                                          // bound cookie MUST be in Cookie's encrypt_exempt — the layer
+                                          // reads the RAW header at SecurityStage (CookieJar decrypt not
+                                          // loaded yet); encryption rotates ciphertext → binding breaks
             lifetime:     43200,          // SECONDS (12h); make()/valid() lifetime MUST match this
             exemptPaths:  config('security.csrf_exempt'),  // e.g. ['/api', '/api/webhooks']
         ),
@@ -935,6 +938,19 @@ Request → FirewallLayer → RateLimiterLayer → CsrfTokenLayer → [AuthModul
           deny(403)         deny(429)          deny(403)          deny(401)
           ZERO module cost at every denial
 ```
+
+**Multi-tenant tenant context (`Identity.tenantId`):** the Auth module's
+`JwtAuthLayer` reads tenant from the signed **`tnt`** claim (legacy `tenant`
+accepted), defaulting to **`''` (empty = unscoped → central connection)**. A
+non-empty tenant is routed to its isolated database by `Plugins\Tenancy`'s
+`TenantContextStage` (`after.load`), which rebinds `DatabasePort` for that
+request. Mint a tenant-scoped token ONLY after verifying membership in the
+central `user_tenants` table; re-check each request so a revoked seat loses
+access before expiry. Control-plane plugins (`Plugins\User`, `Plugins\Auth`) pin
+to the `ConnectionManager` **default** (central) connection so identity I/O is
+never redirected to a tenant DB. The signed `tnt` claim is a hint, not authority —
+authorization still keys on `(userId, tenantId, role/permission)`. Full design:
+`docs/ai-context/09_SECURITY.md` + the Tenancy plugin README.
 
 ```php
 interface SecurityLayerContract
@@ -1523,7 +1539,11 @@ interface DatabasePort {
     public function query(string $sql, array $params = []): array;
     public function queryOne(string $sql, array $params = []): ?array;
     public function execute(string $sql, array $params = []): int;
-    public function lastInsertId(): string;
+    // Portable, atomic INSERT-or-UPDATE — compiles ON DUPLICATE KEY (MySQL) or
+    // ON CONFLICT … DO UPDATE (PostgreSQL/SQLite). NEVER hand-write either clause.
+    // $updateColumns: null = all non-conflict cols, [] = insert-if-absent, subset = those only.
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int;
+    public function lastInsertId(?string $sequence = null): string;  // pass the sequence name on PostgreSQL
     public function beginTransaction(): void;
     public function commit(): void;
     public function rollback(): void;
@@ -1698,6 +1718,8 @@ $bus->assertNotDispatched(InvoiceCreatedIntegrationEvent::class);
 ✗ float for money in migrations — use decimal(precision, scale) with integer storage
 ✗ Writing migrations without a matching down() rollback
 ✗ Hardcoding database table names — use string literals, never interpolation
+✗ Hand-writing ON DUPLICATE KEY / ON CONFLICT in a repository — call $db->upsert() (driver-portable)
+✗ CONCAT / SUBSTRING / driver-specific functions in repository SQL — compute in PHP + bind, or branch on $db->driver()
 ✗ ON UPDATE CURRENT_TIMESTAMP on PostgreSQL — LetMigrate auto-creates BEFORE UPDATE triggers
 ✗ onUpdateCurrentTimestamp() on non-timestamp columns — only for DATE/DATETIME/TIMESTAMP
 ✗ --seed in refresh without wiring SeederRunner to MigrateRefreshCommand
@@ -1884,6 +1906,7 @@ Local application-specific modules live in `plugins/`, NOT `projects/`.
 | Cookie        | `http.cookies`          | `CookieJar` + queued-cookie flush stage (encrypts via `EncryptionPort`) | essential |
 | RedisCache    | `cache.redis`           | `CachePort` + `QueuePort` (ext-redis, in-memory fallback)| essential  |
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
+| Tenancy       | `tenancy.routing`       | Multi-tenant control plane: `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract`. Maps `Identity.tenantId` → isolated tenant `DatabasePort`, rebinds it per request (`TenantContextStage` @ `after.load`). Fail-closed routing + per-tenant circuit breaker; central `tenants`/`user_tenants`/`tenant_invitations`/`refresh_tokens`/`audit_log`. Selection flow: `GET /api/me/tenants`, `POST /api/tenants/{id}/select` (re-verifies membership, mints `tnt` token). Invitations (email onboarding → seat) + one-time-use refresh-token rotation (re-checks membership, mints access JWT). CLI: `tenants:create`, `tenants:migrate`. `requires: ["database.management","auth.identity","user.management"]` | essential  |
 
 **Adding a new plugin:** create `plugins/{Name}/`, implement all GDA layers under
 `Plugins\{Name}\`, then add `Plugins\{Name}\Provider::class` to the relevant
@@ -2010,3 +2033,4 @@ For deeper context on any layer, reference:
 - `@docs/ai-context/16_PLUGINS.md`            — plugins folder convention, local module checklist
 - `@docs/ai-context/18_MIGRATIONS.md`         — LetMigrate engine, migrations, seeders
 - `@docs/ai-context/19_DATABASE.md`           — multi-driver Database module, DatabasePort adapter, connections
+- `@docs/ai-context/22_DATA_ACCESS_ORM_BLUEPRINT.md` — repository/hydrator/entity mapping, portable DatabasePort API (upsert), no vendor ORM

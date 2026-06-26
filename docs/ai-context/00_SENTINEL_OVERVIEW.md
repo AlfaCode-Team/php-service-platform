@@ -82,6 +82,8 @@ after.security hooks    ← module-registered stages run here
     │
     ▼
 ResolveStage            ← route-manifest.php lookup → service name
+                          (static: O(1) "METHOD /path" hash; parameterized:
+                           regex scan over ONLY the requested method's bucket)
     │
     ▼
 LoadStage               ← dep graph calc → OnDemandLoader

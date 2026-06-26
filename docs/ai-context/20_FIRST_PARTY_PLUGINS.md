@@ -26,6 +26,7 @@ project bootstrap (most are already in `app/bootstrap/base.php` or
 | `Session` | `session.management` | `SessionPort` — file/array/cookie handlers, flash, CSRF, lazy persist |
 | `Cookie` | `http.cookies` | `CookieJar` — queued cookies, encrypt/decrypt via `EncryptionPort` |
 | `RedisCache` | `cache.redis` | `CachePort` + `QueuePort` — ext-redis, in-memory fallback |
+| `Tenancy` | `tenancy.routing` | `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract` — database-per-tenant routing + selection/invitation/refresh flows |
 
 Activation: `Storage`, `View`, and `HttpClient` are **on-demand** (a consumer
 declares `requires: ["storage.local"]` / `["view.rendering"]` / `["http.client"]`).
@@ -187,10 +188,23 @@ Every value reads from `.env`:
 | `COOKIE_SECURE` | `secure` | `true` (set `false` for local http://) |
 | `COOKIE_HTTP_ONLY` | `http_only` | `true` |
 | `COOKIE_SAME_SITE` | `same_site` | `Lax` |
-| `COOKIE_ENCRYPT_EXEMPT` | `encrypt_exempt` | `[]` |
+| `COOKIE_ENCRYPT_EXEMPT` (comma-separated) | `encrypt_exempt` | `[]` |
 
 `CookieJar::queue()` attributes are nullable — omitted ones fall back to these
 defaults, so callers usually pass only name + value.
+
+**Encryption exemptions (`encrypt_exempt`).** Names listed here are written AND
+read as plaintext — `CookieJar` skips both `encryptString()` on flush and
+`decryptString()` on `read()` for them. The final list is a base array declared
+in `config/cookie.php` MERGED with the comma-separated `COOKIE_ENCRYPT_EXEMPT`
+env var (de-duplicated), so deployments can add names without editing code.
+Exempt a cookie when its raw value must stay stable and readable as-is:
+
+- a JS-readable flag (theme, locale) the front-end reads directly; or
+- an opaque session/binding cookie a **pre-load security layer** reads raw — e.g.
+  `CsrfTokenLayer`'s `bindCookie`. Encryption rotates the ciphertext on every
+  response (random IV), which would break that binding; exempting it keeps the
+  value byte-stable across requests. See [CSRF guide](21_CSRF.md).
 
 **Helpers (`plugins/Cookie/Support/helpers.php`, autoloaded):**
 
@@ -348,6 +362,116 @@ $component, $props)` returns JSON for `X-Pageflow` XHR navigations or an HTML
 shell (mounting into `{{app}}`) on first load, and honours partial reloads.
 `PageflowVersionStage` returns `409 + X-Pageflow-Location` on stale assets.
 The React client lives in the top-level `frontend/` workspace.
+
+## SiteSEO (`seo.management`, on-demand)
+
+Full SEO toolkit + Project-layer support. `requires: ["http.client"]`. Published
+`SeoServiceContract`: `openGraph()`, `schema()`, `sitemap()`, `robots()`,
+`pingSitemap()`, `indexNow(host,key,keyLocation,urls,endpoints,dryRun)`
+(auto-batches 10k, lazy iterable), `indexNowChunks()`. All outbound HTTP goes
+through `Infrastructure/Gateways/SearchEngineGateway` (`HttpClientPort`) — never
+raw cURL. The toolkit value classes (`OpenGraph`, `Schema`, `Sitemap*`,
+`RobotsTxtEditor`) autoload directly, so building sitemaps / OG / JSON-LD needs
+NO module load; only ping + IndexNow do (they hit the network).
+
+Project-layer helpers (`Project\Support\Seo\`, reusable & DI-free):
+
+- `RouteCatalog` — public static GET pages from the route manifest (drops
+  `{param}`, auth-gated, `/api`, SEO endpoints).
+- `SitemapGenerator` — small/route-derived `<urlset>` (≤30k); `toXml()`/`save()`.
+- `SitemapStreamWriter` — **enterprise**: streams an `iterable` to split child
+  files + index at **O(1) memory** (no DOM), 50k split, optional gzip. For
+  millions of URLs (verified flat memory to 1M+).
+- `SitemapUrlProvider` + `SitemapSource` — expand dynamic routes (`/blog/{slug}`)
+  from the DB with a keyset-cursor generator; `uncoveredDynamicRoutes()` guards
+  silent omissions.
+- `RichGraph` — Schema.org JSON-LD `@graph` for Google rich results (org →
+  website[SearchAction] → webPage → breadcrumb → content node, linked by `@id`).
+  Content nodes: article/newsArticle/blogPosting, product (offer+rating+review),
+  book, course (syllabus), realEstate (lease), pageantEdition/awardEdition/
+  contestant (Event+Person), faq.
+- `SeoHead` — full `<head>`: title, description, **canonical**, **robots**,
+  **hreflang**/x-default, plus attached OG + JSON-LD.
+- `IndexNowKey` — key/keyLocation value object.
+
+Controller traits (`Project\Http\Controllers\Concerns\`): `InteractsWithSeo`
+(siteBaseUrl, sitemap, openGraph, ogImage, richGraph, robots) and
+`InteractsWithGraphSeo` (adds `graph()` + `seoHead()`).
+
+Background indexing: job `seo.indexnow` (`IndexNowJob`, queue `indexing`,
+declared in `module.json` `jobs[]`, bound in `Provider::register()`) submits one
+≤10k batch; dispatch by chunking a URL stream and `QueuePort::push()` per batch
+(`FileQueue` in `Project\Infrastructure\` is the no-Redis fallback). Index-on-
+publish: emit `UrlPublishedIntegrationEvent` after commit → SEO module subscribes
+`EnqueueIndexNowListener` (`Provider::boot()`) which enqueues. The EventBus
+resolves listeners from the CoreContainer (`has()` bound-only), so the **project
+binds the listener with its `QueuePort`** in `bootstrap/app.php`. Env:
+`INDEXNOW_KEY` (listener no-ops without it), `INDEXNOW_LIVE`.
+
+`NOTE` the toolkit had two real bugs fixed during integration: `Schema` now emits
+a proper multi-node `@graph` (was serializing only `things[0]`), and the Twitter
+card no longer leaks `og:image:*` keys when a structured image is attached.
+
+## Tenancy (multi-tenant control plane)
+
+`solves: tenancy.routing`, `requires: ["database.management"]`, **essential**.
+Database-per-tenant isolation layered on `plugins/Database`'s `ConnectionManager`.
+
+Two planes: a **central (control) DB** holds `users`, `tenants`, `user_tenants`
+(+ optional invitations/refresh-tokens/audit); each **tenant has its own DB**
+containing only business domain (no auth, no `tenant_id` column — the database is
+the boundary). User references inside a tenant DB store the central
+`users.user_id` ULID as an opaque value (no cross-DB FK).
+
+Flow: the Auth layer mints a tenant-scoped `Identity` (JWT `tnt` claim →
+`Identity.tenantId`) after the user selects a tenant, re-checking `user_tenants`
+each request so a revoked membership drops access before the token expires.
+`TenantContextStage` (hooked at `after.load`) reads `Identity.tenantId`, asks
+`TenantConnectionResolver` for that tenant's `DatabasePort`, and **rebinds
+`DatabasePort` in the request container** — every repository then transparently
+talks to the tenant DB.
+
+- **`TenantRegistry`** — cached reads of central `tenants` (DatabasePort-only,
+  reads the `ConnectionManager` default = central connection).
+- **`TenantConnectionResolver`** — `tenant_id → DatabasePort`; registers a named
+  `tenant:<id>` connection (password decrypted via `EncryptionPort` at connect
+  time only). **Fail-closed**: unknown/suspended/deleted/unreachable → throw,
+  never falls back to another tenant or central. Per-tenant **circuit breaker**
+  (`TENANCY_BREAKER_THRESHOLD`/`TENANCY_BREAKER_COOLDOWN`) isolates one dead
+  tenant DB from the fleet.
+- **Swoole-safe**: tenant `DatabasePort` is bound into the per-request
+  `ModuleContainer` (discarded on `reset()`); tenant id rides on the immutable
+  `Request`/`Identity`, never a static or `CoreContainer`. For cross-request
+  pooling, bind `ConnectionManager` + resolver into the `CoreContainer` in
+  bootstrap (see the plugin README) and LRU-evict idle tenant connections.
+- **CLI**: `tenants:create` (registry row → CREATE DATABASE → template migrate →
+  activate, with compensating `provisioning` status) and `tenants:migrate`
+  (resumable, failure-isolated fleet migrator; each tenant DB keeps its own
+  `let_migrations` table; central `tenants.schema_version` mirrors drift).
+- **Tenant template** migrations live in `plugins/Tenancy/database/tenant-template/`
+  (override via `TENANCY_TEMPLATE_PATH`). Use expand→migrate→contract for
+  destructive changes and canary waves across the fleet.
+- **Tenant-selection flow** (`MembershipServiceContract`, requires `auth.identity`):
+  `GET /api/me/tenants` lists active seats; `POST /api/tenants/{tenantId}/select`
+  re-verifies the membership against central `user_tenants` (never trusts a
+  client-supplied id), mints a tenant-scoped token via the Auth module (`tnt`
+  claim), and audits `tenant.switch`. `TENANCY_TOKEN_TTL` sets the scoped-token
+  lifetime. A revoked seat fails selection (`403`, audited `tenant.switch_denied`)
+  and loses access on an already-issued token via the per-request re-check.
+- **Control-plane tables** (central migrations): `tenants`, `user_tenants`,
+  `tenant_invitations` (email onboarding, hashed token), `refresh_tokens`
+  (revocable, hash-only), `audit_log` (append-only).
+- **Invitations** (`InvitationServiceContract`): `invite()` returns a one-time
+  token (hash stored); `accept()` requires the user's verified email to match,
+  creates/activates the seat (idempotent), audits `member.join`; `revoke()`.
+- **Refresh tokens** (`RefreshTokenServiceContract`): `issue()` / `rotate()` /
+  `revoke()` / `revokeAllForUser()`. Rotation is one-time-use (revokes the
+  presented token), re-checks `user_tenants` for scoped tokens, and mints a
+  paired access JWT. Tunable via `TENANCY_REFRESH_TTL` / `TENANCY_ACCESS_TTL`.
+
+Env: `TENANCY_MODE` (`legacy|dual-write|tenant` migration phases),
+`TENANCY_REGISTRY_TTL`, `TENANCY_BREAKER_THRESHOLD`, `TENANCY_BREAKER_COOLDOWN`,
+`TENANCY_TEMPLATE_PATH`. Full guide: `plugins/Tenancy/README.md`.
 
 ## DevTools (CLI)
 

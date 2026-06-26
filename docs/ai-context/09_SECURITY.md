@@ -157,6 +157,32 @@ new CsrfTokenLayer(
 // NOTE: the kernel ships NO JWT code — an Auth module registers this layer.
 ```
 
+### Tenant context on the Identity (`tnt` claim — multi-tenant control plane)
+
+`Identity.tenantId` carries the authenticated tenant for database-per-tenant
+routing. `Plugins\Auth\Security\JwtAuthLayer` reads it from the signed **`tnt`**
+claim (legacy `tenant` accepted for BC) and defaults it to **`''` (empty)**:
+
+```php
+$tenant = (string) ($claims['tnt'] ?? $claims['tenant'] ?? '');
+$identity = new Identity(userId: $claims['sub'], tenantId: $tenant, /* … */);
+```
+
+- **Empty tenant = UNSCOPED.** Login, the tenant picker, and public pages keep
+  the central connection. `AuthService::issueJwt()` mints NO tenant at login.
+- **Non-empty tenant** is routed to its isolated database by
+  `Plugins\Tenancy`'s `TenantContextStage` (hooked `after.load`), which rebinds
+  `DatabasePort` in the request container. Mint a tenant-scoped token ONLY after
+  the user selects a tenant and membership is verified against the central
+  `user_tenants` table; re-check membership each request so a revoked seat loses
+  access before the token expires.
+- **Control-plane plugins pin to central.** `Plugins\User` (the global `users`
+  identity table) and `Plugins\Auth` (`personal_access_tokens`) resolve the
+  `DatabaseConnectionManagerContract` **default** connection, NOT the per-request
+  (tenant-rebound) `DatabasePort` — so identity I/O never lands in a tenant DB.
+  Because the `tnt` claim is signed it cannot be forged, but it is still a hint,
+  not authority: authorization keys on `(userId, tenantId, role/permission)`.
+
 ---
 
 ## Writing a Custom Security Layer

@@ -157,10 +157,19 @@ Two consequences:
    and mint with the value you are setting — so it matches on the next request.
 
 2. **The bound cookie must NOT be encrypted by `CookieJar`.** `CookieJar` encrypts
-   queued cookies by default; the layer reads the raw header and would see
-   ciphertext. Either bind to the session cookie (whose raw id is what's in the
-   header) or queue a dedicated binding cookie with `raw: true` and read it back
-   with `$request->cookie(...)` (NOT `$this->cookie(...)`, which tries to decrypt).
+   queued cookies by default, AND it re-encrypts with a fresh random IV on every
+   flush — so the ciphertext in the header changes between requests. The layer
+   runs at `SecurityStage` (before `after.load`), reads the raw header, and would
+   see that rotating ciphertext → intermittent `403 CSRF token invalid`. Avoid it
+   one of three ways:
+   - **Add the binding cookie to `encrypt_exempt`** (`COOKIE_ENCRYPT_EXEMPT` env or
+     the base list in `plugins/Cookie/config/cookie.php`). It is then stored AND
+     read as plaintext, so its raw value is byte-stable — the cleanest option for
+     pinning to the session cookie. See [First-party plugins → Cookie](20_FIRST_PARTY_PLUGINS.md).
+   - Queue a dedicated binding cookie with `raw: true` and read it back with
+     `$request->cookie(...)` (NOT `$this->cookie(...)`, which tries to decrypt).
+   - Bind to a cookie that is not re-written every response (so its value never
+     rotates), or use `bindCookie: ''` for a secret-only (unbound) token.
 
 ---
 

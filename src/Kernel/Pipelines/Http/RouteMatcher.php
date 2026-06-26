@@ -7,8 +7,9 @@ namespace AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http;
  * RouteMatcher — matches a method+path against the compiled route manifest.
  *
  * Exact matches are an O(1) hash lookup. Parameterized routes ({id}, {slug})
- * fall back to a linear regex scan with NAMED capture, so captured values are
- * returned and forwarded to the controller.
+ * fall back to a regex scan with NAMED capture, so captured values are returned
+ * and forwarded to the controller. Dynamic routes are bucketed by HTTP method,
+ * so a request only scans the regexes registered for its own method.
  *
  * Built once and reused across requests — it holds no per-request state.
  */
@@ -17,7 +18,12 @@ final class RouteMatcher
     /** @var array<string, array<string, mixed>> "METHOD /path" => entry (static routes) */
     private array $static = [];
 
-    /** @var list<array{method: string, regex: string, params: list<string>, entry: array<string, mixed>}> */
+    /**
+     * Dynamic (parameterized) routes bucketed by HTTP method, so a request only
+     * scans the regexes for ITS method instead of the whole dynamic table.
+     *
+     * @var array<string, list<array{regex: string, params: list<string>, entry: array<string, mixed>}>>
+     */
     private array $dynamic = [];
 
     /** @param array<string, array<string, mixed>> $manifest */
@@ -42,8 +48,7 @@ final class RouteMatcher
                 $path,
             );
 
-            $this->dynamic[] = [
-                'method' => $method,
+            $this->dynamic[$method][] = [
                 'regex'  => '#^' . $regex . '$#',
                 'params' => $params,
                 'entry'  => $entry,
@@ -61,10 +66,7 @@ final class RouteMatcher
             return ['entry' => $this->static[$key], 'params' => []];
         }
 
-        foreach ($this->dynamic as $route) {
-            if ($route['method'] !== $method) {
-                continue;
-            }
+        foreach ($this->dynamic[$method] ?? [] as $route) {
             if (preg_match($route['regex'], $path, $matches) === 1) {
                 $params = [];
                 foreach ($route['params'] as $name) {

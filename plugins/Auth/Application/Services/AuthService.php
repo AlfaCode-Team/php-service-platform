@@ -33,10 +33,14 @@ final class AuthService implements AuthServiceContract
             throw new ServiceException('auth.jwt.unconfigured', layer: 'service.auth');
         }
 
+        // Tenant context travels on the signed `tnt` claim. Mint it ONLY after
+        // the user selects a tenant and membership is verified against the
+        // central `user_tenants` table; an access token issued at login carries
+        // no tenant (empty) so it routes to the central connection only.
         $now = time();
         $payload = [
             'sub'         => $userId,
-            'tenant'      => $claims['tenant'] ?? 'default',
+            'tnt'         => $claims['tnt'] ?? $claims['tenant'] ?? '',
             'roles'       => array_values($claims['roles'] ?? []),
             'permissions' => array_values($claims['permissions'] ?? []),
             'iat'         => $now,
