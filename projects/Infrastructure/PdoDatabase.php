@@ -59,9 +59,44 @@ final class PdoDatabase implements DatabasePort
         return $stmt->rowCount();
     }
 
-    public function lastInsertId(): string
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int
     {
-        return $this->pdo->lastInsertId();
+        if ($values === []) {
+            return 0;
+        }
+
+        $columns      = array_keys($values);
+        $updateColumns ??= array_values(array_diff($columns, $conflictColumns));
+        $driver       = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $quote        = static fn (string $i): string => $driver === 'mysql'
+            ? '`' . str_replace('`', '', $i) . '`'
+            : '"' . str_replace('"', '', $i) . '"';
+
+        $cols   = implode(', ', array_map($quote, $columns));
+        $binds  = implode(', ', array_map(static fn (string $c): string => ':' . $c, $columns));
+        $insert = "INSERT INTO {$quote($table)} ({$cols}) VALUES ({$binds})";
+
+        if ($driver === 'mysql') {
+            $sql = $updateColumns === []
+                ? "{$insert} ON DUPLICATE KEY UPDATE {$quote($conflictColumns[0] ?? $columns[0])} = {$quote($conflictColumns[0] ?? $columns[0])}"
+                : "{$insert} ON DUPLICATE KEY UPDATE " . implode(', ', array_map(
+                    static fn (string $c): string => "{$quote($c)} = VALUES({$quote($c)})", $updateColumns));
+        } else {
+            $target = implode(', ', array_map($quote, $conflictColumns));
+            $sql = $updateColumns === []
+                ? "{$insert} ON CONFLICT ({$target}) DO NOTHING"
+                : "{$insert} ON CONFLICT ({$target}) DO UPDATE SET " . implode(', ', array_map(
+                    static fn (string $c): string => "{$quote($c)} = EXCLUDED.{$quote($c)}", $updateColumns));
+        }
+
+        return $this->execute($sql, $values);
+    }
+
+    public function lastInsertId(?string $sequence = null): string
+    {
+        return $sequence !== null
+            ? (string) $this->pdo->lastInsertId($sequence)
+            : (string) $this->pdo->lastInsertId();
     }
 
     public function beginTransaction(): void

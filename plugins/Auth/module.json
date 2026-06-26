@@ -4,7 +4,7 @@
     "solves": "auth.identity",
     "type": "module",
 
-    "requires": ["database.query", "crypto.services"],
+    "requires": ["database.management", "crypto.services"],
     "exposes": ["Plugins\\Auth\\API\\Contracts\\AuthServiceContract"],
 
     "routes": [],

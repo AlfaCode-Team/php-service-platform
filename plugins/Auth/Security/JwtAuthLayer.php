@@ -57,9 +57,16 @@ final class JwtAuthLayer implements SecurityLayerContract
             return SecurityVerdict::deny(401, 'Authentication token is invalid or expired.');
         }
 
+        // Tenant context rides on the signed `tnt` claim (legacy `tenant`
+        // accepted for BC). Empty = UNSCOPED: the request keeps the central
+        // connection (login, tenant picker, public pages). A non-empty tenant is
+        // routed to its isolated DB by plugins/Tenancy's TenantContextStage,
+        // which re-checks membership so a revoked seat loses access before expiry.
+        $tenant = (string) ($claims['tnt'] ?? $claims['tenant'] ?? '');
+
         $identity = new Identity(
             userId:      (string) ($claims['sub'] ?? ''),
-            tenantId:    (string) ($claims['tenant'] ?? 'default'),
+            tenantId:    $tenant,
             roles:       array_values((array) ($claims['roles'] ?? [])),
             permissions: array_values((array) ($claims['permissions'] ?? [])),
             tokenType:   'jwt',
