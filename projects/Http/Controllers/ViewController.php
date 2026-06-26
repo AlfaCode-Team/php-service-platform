@@ -7,10 +7,7 @@ namespace Project\Http\Controllers;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Contracts\RequestAware;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Response;
 use Plugins\View\API\Contracts\ViewRendererContract;
-use Project\Http\Controllers\Concerns\InteractsWithCookies;
-use Project\Http\Controllers\Concerns\InteractsWithProject;
-use Project\Http\Controllers\Concerns\InteractsWithSession;
-use Project\Http\Controllers\Concerns\InteractsWithStorage;
+use Project\Http\Controllers\Concerns\InteractsWithCsrf;
 
 /**
  * Base controller for HTML / view endpoints.
@@ -35,14 +32,12 @@ use Project\Http\Controllers\Concerns\InteractsWithStorage;
  */
 abstract class ViewController implements RequestAware
 {
-    use InteractsWithCookies;
-    use InteractsWithProject;
-    use InteractsWithSession;
-    use InteractsWithStorage;
-
+    use InteractsWithCsrf;
+    protected const API_BASE = null;
     public function __construct(
         protected readonly ViewRendererContract $renderer,
-    ) {}
+    ) {
+    }
 
     /**
      * Render a view into an HTML Response.
@@ -52,6 +47,14 @@ abstract class ViewController implements RequestAware
      */
     protected function view(string $view, array $data = [], ?string $layout = null, int $status = 200): Response
     {
+        $data['apiBase'] = static::API_BASE;
+
+        // ViewController always composes InteractsWithCsrf, so a token is always
+        // available. (The previous guard checked csrfToken(), which only exists
+        // when InteractsWithSession is also used — so $data['csrf'] was never set
+        // and every form rendered an empty token.)
+        $data['csrf'] = $this->_csrfToken();
+
         $options = $layout !== null ? ['layout' => $layout] : null;
 
         $html = $this->renderer->setData($data)->render($view, $options);

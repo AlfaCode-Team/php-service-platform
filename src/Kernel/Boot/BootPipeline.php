@@ -45,15 +45,21 @@ final class BootPipeline
         array $securityLayers = [],
         array $projectRoutes = [],
     ) {
+        // Single reader shared across every manifest-reading stage: each module.json
+        // (the single source of truth) is read + JSON-decoded ONCE and cached, instead
+        // of once per stage. The cache populates on the first stage to touch a module
+        // and every later stage hits it.
+        $reader = new ManifestReader();
+
         $this->stages = [
-            new ValidateConfigStage($moduleClasses),         // 1. env vars present + typed
-            new DetectConflictsStage($moduleClasses),        // 2. no two modules share solves()
-            new DetectCyclesStage($moduleClasses),           // 3. no circular requires[] chains
-            new CompileServiceManifestStage($moduleClasses, projectRoutes: $projectRoutes), // 4. dep graph → service-manifest.php
-            new CompileRouteManifestStage($moduleClasses, projectRoutes: $projectRoutes),   // 5. routes[] → route-manifest.php
-            new CompileViewManifestStage($moduleClasses),    // 6. views[] → view-manifest.php (project-first cascade)
-            new CompileJobManifestStage($moduleClasses),     // 7. jobs[] → job-manifest.php
-            new CompileCommandManifestStage($moduleClasses), // 8. commands[] → command-manifest.php
+            new ValidateConfigStage($moduleClasses, reader: $reader),         // 1. env vars present + typed
+            new DetectConflictsStage($moduleClasses, reader: $reader),        // 2. no two modules share solves()
+            new DetectCyclesStage($moduleClasses, reader: $reader),           // 3. no circular requires[] chains
+            new CompileServiceManifestStage($moduleClasses, projectRoutes: $projectRoutes, reader: $reader), // 4. dep graph → service-manifest.php
+            new CompileRouteManifestStage($moduleClasses, projectRoutes: $projectRoutes, reader: $reader),   // 5. routes[] → route-manifest.php
+            new CompileViewManifestStage($moduleClasses, reader: $reader),    // 6. views[] → view-manifest.php (project-first cascade)
+            new CompileJobManifestStage($moduleClasses, reader: $reader),     // 7. jobs[] → job-manifest.php
+            new CompileCommandManifestStage($moduleClasses, reader: $reader), // 8. commands[] → command-manifest.php
             new RegisterPortsStage($core),                   // 9. Port → Adapter bindings validated
             new BindSecurityStage($securityLayers),          // 10. SecurityGateway layers validated
         ];

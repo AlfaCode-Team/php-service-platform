@@ -62,3 +62,4 @@ ehthumbs.db
 *.swp
 *.swo
 *~
+**/.zig-cache

@@ -12,6 +12,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\HttpPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Worker\WorkerPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HashingPort;
+use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
 use Plugins\Auth\API\Contracts\AuthServiceContract;
 use Plugins\Auth\Application\Services\AuthService;
 use Plugins\Auth\Infrastructure\Persistence\PersonalAccessTokenRepository;
@@ -35,8 +36,9 @@ final class Provider implements ModuleContract
     /** @return list<class-string> */
     public function requires(): array
     {
-        // Mirrors module.json "requires": database.query + crypto.services.
-        return [DatabasePort::class, HashingPort::class];
+        // Mirrors module.json "requires": database.management + crypto.services.
+        // personal_access_tokens is a control-plane table, pinned to central.
+        return [DatabaseConnectionManagerContract::class, HashingPort::class];
     }
 
     /** @return list<class-string> */
@@ -49,7 +51,10 @@ final class Provider implements ModuleContract
     {
         $container->bindInternal(PersonalAccessTokenRepository::class, static fn(ModuleContainer $c) =>
             new PersonalAccessTokenRepository(
-                $c->make(DatabasePort::class),
+                // Central connection — tokens belong to the control plane, not a
+                // tenant DB, so resolve the ConnectionManager default rather than
+                // the per-request (tenant-rebound) DatabasePort.
+                $c->make(DatabaseConnectionManagerContract::class)->default(),
                 env('AUTH_PAT_TABLE') ?: 'personal_access_tokens',
             )
         );

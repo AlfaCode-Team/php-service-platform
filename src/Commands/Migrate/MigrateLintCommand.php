@@ -19,9 +19,10 @@ final class MigrateLintCommand extends LetMigrateCommand
     protected function handle(): int
     {
         $pending    = $this->service()->pending();
-        $statements = $pending === []
-            ? []
-            : (array) $this->service()->captureSql(array_keys($pending));
+        $statements = [];
+        if ($pending !== []) {
+            [$statements] = $this->service()->captureSql(array_keys($pending));
+        }
 
         $linter   = new MigrationLinter();
         $findings = $linter->lint($statements);

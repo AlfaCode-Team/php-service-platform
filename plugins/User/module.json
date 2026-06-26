@@ -1,0 +1,37 @@
+{
+    "name": "user",
+    "version": "1.0.0",
+    "solves": "user.management",
+    "type": "module",
+
+    "requires": ["database.management", "crypto.services", "cache.redis", "view.rendering"],
+    "exposes": ["Plugins\\User\\API\\Contracts\\UserServiceContract"],
+
+    "views": "resources/views",
+
+    "routes": [
+        { "method": "GET",    "path": "/users",             "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserPageController@index"  },
+        { "method": "GET",    "path": "/users/create",      "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserPageController@create" },
+        { "method": "GET",    "path": "/users/{id}/edit",   "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserPageController@edit"   },
+        { "method": "GET",    "path": "/users/{id}",        "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserPageController@show"   },
+
+        { "method": "GET",    "path": "/ajx/users",      "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserController@index",   "filters": ["auth"] },
+        { "method": "POST",   "path": "/ajx/users",      "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserController@register", "filters": ["throttle:10,1"] },
+        { "method": "GET",    "path": "/ajx/users/{id}", "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserController@show",     "filters": ["auth"] },
+        { "method": "POST",   "path": "/ajx/users/{id}/verify-email", "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserController@verifyEmail", "filters": ["auth"] },
+        { "method": "PUT",    "path": "/ajx/users/{id}", "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserController@update",   "filters": ["auth"] },
+        { "method": "PATCH",  "path": "/ajx/users/{id}", "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserController@update",   "filters": ["auth"] },
+        { "method": "DELETE", "path": "/ajx/users/{id}", "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserController@destroy",  "filters": ["auth"] }
+    ],
+
+    "emits":   ["user.registered", "user.updated", "user.deleted"],
+    "listens": [],
+
+    "documentation": "The User plugin — owns the user.management domain. CRUD + email verification + timing-safe, rate-limited credential verification over the GLOBAL central `users` identity table (identity is centralized, username/email globally unique, repository + outbox pinned to the central connection). Passwords are hashed via crypto.services (bcrypt, rehash-on-login); hashes and remember tokens never cross the API boundary. Writes are optimistic-locked (version); integration events use a transactional outbox drained by `user:outbox:relay`. Enabling publishes config/, database/ (migrations, seeder, factory) and resources/.",
+
+    "commands": ["Plugins\\User\\Infrastructure\\Cli\\RelayUserOutboxCommand"],
+
+    "config": [
+        { "key": "HASH_BCRYPT_COST", "type": "int", "required": false }
+    ]
+}
