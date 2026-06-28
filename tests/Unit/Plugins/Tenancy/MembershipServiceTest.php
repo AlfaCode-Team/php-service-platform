@@ -60,11 +60,14 @@ final class MembershipServiceTest extends TestCase
             {
                 return 'jwt:' . $userId . ':' . ($claims['tnt'] ?? '') . ':' . implode(',', $claims['roles'] ?? []);
             }
-            public function createPersonalAccessToken(string $userId, string $name = 'default'): array
+            public function createPersonalAccessToken(string $userId, string $name = 'default', array $abilities = [], ?int $ttlSeconds = null): array
             {
                 return ['id' => 'id', 'token' => 'tok'];
             }
             public function revokePersonalAccessToken(string $id): void {}
+            public function startSession(\AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort $session, string $userId, array $roles = [], array $permissions = [], string $tenantId = ''): void {}
+            public function endSession(\AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort $session): void {}
+            public function revokeJwt(string $jti, int $ttlSeconds = 3600): void {}
             public function hashPassword(string $plain): string { return $plain; }
             public function verifyPassword(string $plain, string $hash): bool { return $plain === $hash; }
         };

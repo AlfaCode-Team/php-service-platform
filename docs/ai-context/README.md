@@ -48,6 +48,11 @@ Canonical install/distribution guide:
 | `19_DATABASE.md` | Multi-driver Database module, DatabasePort adapter, connections | When configuring databases or writing repositories |
 | `20_FIRST_PARTY_PLUGINS.md` | Ported plugins: Authorization, Auth, SocialAuth, SecurityFilters, Crypto, Validation, I18n, Support, Mail, Pageflow, DevTools | When using auth, crypto, validation, i18n, collections, mail, or the SPA bridge |
 | `21_CSRF.md` | CsrfTokenLayer: HMAC-signed CSRF tokens (WP-nonce style), framework wiring, mint/verify usage | When wiring CSRF protection or rendering forms/SPA tokens |
+| `22_DATA_ACCESS_ORM_BLUEPRINT.md` | Repository/hydrator/entity mapping, portable DatabasePort API (upsert), no vendor ORM | When writing repositories or mapping rows to entities |
+| `23_TENANCY.md` | Tenancy plugin: identification modes, TenantContextStage routing + tenant cookie, central tables, CLI provisioning, membership auto-assign, audit | When working on multi-tenancy, tenant routing, provisioning, or memberships |
+| `24_USER.md` | User plugin: central identity, UserServiceContract, transactional outbox, audit_log persistence, tenant-origin on user.registered | When working on users, registration, credentials, or the user outbox/audit |
+| `25_AUTH.md` | Auth plugin: JWT/PAT/session issuance + verification, JwtAuthLayer (iss/aud/leeway, jti revocation), asymmetric signing, SessionAuthStage, `/auth` routes | When working on authentication, tokens, login/sessions, or SecurityLayers |
+| `26_OAUTH2.md` | OAuth2 plugin: OAuth 2.1 + OIDC authorization server — grants (auth-code/PKCE, client-credentials, refresh, password, device), JWKS, introspection/revocation, scope namespacing, apex-host placement | When working on third-party/delegated auth, OAuth clients, OIDC, or `/oauth/*` |
 
 ---
 

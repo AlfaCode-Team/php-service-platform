@@ -14,6 +14,10 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Worker\WorkerPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\CachePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HashingPort;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HttpClientPort;
+use Plugins\User\Application\Ports\BreachChecker;
+use Plugins\User\Infrastructure\Gateways\NullBreachChecker;
+use Plugins\User\Infrastructure\Gateways\PwnedPasswordGateway;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
 use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
 use Plugins\User\API\Contracts\UserServiceContract;
@@ -53,6 +57,7 @@ final class Provider implements ModuleContract
             HashingPort::class,
             CachePort::class,
             ViewRendererContract::class,
+            HttpClientPort::class, // breached-password screening (opt-in via USER_BREACH_CHECK)
         ];
     }
 
@@ -75,19 +80,45 @@ final class Provider implements ModuleContract
 
         $container->bindInternal(AuditLogger::class, static function (ModuleContainer $c) {
             $identity = $c->make(Identity::class);
-            return new AuditLogger($identity->userId ?: null);
+            // Persist to the shared central `audit_log` table in addition to the
+            // log line (central connection — audit is never tenant-routed). The
+            // active tenant is published by Tenancy's TenantContextStage under the
+            // 'tenant.current' container key (a plain string — no Tenancy import).
+            $tenantId = $c->has('tenant.current') ? (string) $c->make('tenant.current') : null;
+            return new AuditLogger(
+                $identity->userId ?: null,
+                db:       self::central($c),
+                tenantId: $tenantId,
+            );
+        });
+
+        // Breached-password screening (NIST 800-63B). Enabled with
+        // USER_BREACH_CHECK; uses the HIBP k-anonymity range API via
+        // HttpClientPort. Falls back to a no-op when disabled or no HTTP client
+        // is available, so the check is purely opt-in and never a hard dependency.
+        $container->bindInternal(BreachChecker::class, static function (ModuleContainer $c): BreachChecker {
+            $enabled = filter_var(env('USER_BREACH_CHECK', false), FILTER_VALIDATE_BOOL);
+            if (!$enabled || !$c->has(HttpClientPort::class)) {
+                return new NullBreachChecker();
+            }
+
+            return new PwnedPasswordGateway(
+                $c->make(HttpClientPort::class),
+                (int) (env('USER_BREACH_THRESHOLD') ?: 1),
+            );
         });
 
         $container->bind(UserServiceContract::class, static fn(ModuleContainer $c) =>
             new UserService(
-                repository:  $c->make(UserRepository::class),
-                transaction: $c->make(TransactionManager::class),
-                collector:   $c->make(DomainEventCollector::class),
-                outbox:      $c->make(OutboxWriter::class),
-                hasher:      $c->make(HashingPort::class),
-                identity:    $c->make(Identity::class),
-                cache:       $c->make(CachePort::class),
-                audit:       $c->make(AuditLogger::class),
+                repository:    $c->make(UserRepository::class),
+                transaction:   $c->make(TransactionManager::class),
+                collector:     $c->make(DomainEventCollector::class),
+                outbox:        $c->make(OutboxWriter::class),
+                hasher:        $c->make(HashingPort::class),
+                identity:      $c->make(Identity::class),
+                cache:         $c->make(CachePort::class),
+                audit:         $c->make(AuditLogger::class),
+                breachChecker: $c->make(BreachChecker::class),
             ));
 
         // HTML page controller (renders the AJAX-driven UI shell).

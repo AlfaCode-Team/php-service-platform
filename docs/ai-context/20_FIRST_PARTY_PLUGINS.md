@@ -10,7 +10,8 @@ project bootstrap (most are already in `app/bootstrap/base.php` or
 | Plugin | solves | Exposes / provides |
 |---|---|---|
 | `Authorization` | `authorization.policy` | `AuthorizationServiceContract` (Casbin RBAC/ABAC) |
-| `Auth` | `auth.identity` | `AuthServiceContract` + JWT/PAT SecurityLayers |
+| `Auth` | `auth.identity` | `AuthServiceContract` + JWT/PAT/session SecurityLayers (asymmetric signing, `jti` revocation, `SessionAuthStage`, `/auth/login\|logout\|me`). **Deep dive: [25_AUTH.md](25_AUTH.md)** |
+| `OAuth2` | `oauth.server` | Native OAuth 2.1 + OIDC authorization server (auth-code/PKCE, client-credentials, refresh, password, device; JWKS, introspection/revocation, discovery). Access tokens are platform JWTs. **Deep dive: [26_OAUTH2.md](26_OAUTH2.md)** |
 | `SocialAuth` | `auth.social` | `SocialAuthServiceContract` (OAuth1/OAuth2) |
 | `SecurityFilters` | `http.security_filters` | global hooks (CORS, SecureHeaders) + route-filter aliases (`auth`, `throttle`, `hmac`, `shield`) |
 | `Crypto` | `crypto.services` | `EncryptionPort` + `HashingPort` adapters |
@@ -26,7 +27,8 @@ project bootstrap (most are already in `app/bootstrap/base.php` or
 | `Session` | `session.management` | `SessionPort` — file/array/cookie handlers, flash, CSRF, lazy persist |
 | `Cookie` | `http.cookies` | `CookieJar` — queued cookies, encrypt/decrypt via `EncryptionPort` |
 | `RedisCache` | `cache.redis` | `CachePort` + `QueuePort` — ext-redis, in-memory fallback |
-| `Tenancy` | `tenancy.routing` | `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract` — database-per-tenant routing + selection/invitation/refresh flows |
+| `Tenancy` | `tenancy.routing` | `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract` + `TenantHostServiceContract` — database-per-tenant routing + selection/invitation/refresh/custom-host flows. **Deep dive: [23_TENANCY.md](23_TENANCY.md)** |
+| `User` | `user.management` | `UserServiceContract` — GLOBAL central identity (CRUD, credential/email verification, transactional outbox, audit_log). **Deep dive: [24_USER.md](24_USER.md)** |
 
 Activation: `Storage`, `View`, and `HttpClient` are **on-demand** (a consumer
 declares `requires: ["storage.local"]` / `["view.rendering"]` / `["http.client"]`).
@@ -469,9 +471,12 @@ talks to the tenant DB.
   presented token), re-checks `user_tenants` for scoped tokens, and mints a
   paired access JWT. Tunable via `TENANCY_REFRESH_TTL` / `TENANCY_ACCESS_TTL`.
 
-Env: `TENANCY_MODE` (`legacy|dual-write|tenant` migration phases),
-`TENANCY_REGISTRY_TTL`, `TENANCY_BREAKER_THRESHOLD`, `TENANCY_BREAKER_COOLDOWN`,
-`TENANCY_TEMPLATE_PATH`. Full guide: `plugins/Tenancy/README.md`.
+Env: `TENANCY_MODE` (`claim` = JWT `tnt` claim, default · `domain` = Host
+sub-domain), `TENANCY_BASE_DOMAINS`, `TENANCY_REGISTRY_TTL`,
+`TENANCY_BREAKER_THRESHOLD`, `TENANCY_BREAKER_COOLDOWN`, `TENANCY_TEMPLATE_PATH`,
+`TENANCY_TOKEN_TTL` / `TENANCY_REFRESH_TTL` / `TENANCY_ACCESS_TTL`.
+**Full AI reference: [23_TENANCY.md](23_TENANCY.md)** · human guide:
+`plugins/Tenancy/README.md`.
 
 ## DevTools (CLI)
 
