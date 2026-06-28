@@ -10,12 +10,16 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Events\EventBus;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Cli\CliPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\HttpPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Worker\WorkerPipeline;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\CachePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HashingPort;
 use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort;
 use Plugins\Auth\API\Contracts\AuthServiceContract;
 use Plugins\Auth\Application\Services\AuthService;
+use Plugins\Auth\Infrastructure\Http\Controllers\SessionAuthController;
 use Plugins\Auth\Infrastructure\Persistence\PersonalAccessTokenRepository;
+use Plugins\User\API\Contracts\UserServiceContract;
 
 /**
  * Auth plugin — GDA-native authentication.
@@ -36,9 +40,14 @@ final class Provider implements ModuleContract
     /** @return list<class-string> */
     public function requires(): array
     {
-        // Mirrors module.json "requires": database.management + crypto.services.
-        // personal_access_tokens is a control-plane table, pinned to central.
-        return [DatabaseConnectionManagerContract::class, HashingPort::class];
+        // Mirrors module.json "requires". personal_access_tokens is a control-plane
+        // table, pinned to central. UserServiceContract verifies credentials for the
+        // session login flow; SessionPort (essential) carries the web/AJAX session.
+        return [
+            DatabaseConnectionManagerContract::class,
+            HashingPort::class,
+            UserServiceContract::class,
+        ];
     }
 
     /** @return list<class-string> */
@@ -63,15 +72,70 @@ final class Provider implements ModuleContract
             new AuthService(
                 tokens:    $c->make(PersonalAccessTokenRepository::class),
                 hasher:    $c->make(HashingPort::class),
-                jwtSecret: env('JWT_SECRET') ?: '',
-                jwtAlgo:   env('JWT_ALGO') ?: 'HS256',
+                jwtSecret:   env('JWT_SECRET') ?: '',
+                jwtAlgo:     env('JWT_ALGO') ?: 'HS256',
+                jwtIssuer:     env('JWT_ISSUER') ?: null,
+                jwtAudience:   env('JWT_AUDIENCE') ?: null,
+                cache:         $c->has(CachePort::class) ? $c->make(CachePort::class) : null,
+                jwtPrivateKey: self::readKey(env('JWT_PRIVATE_KEY'), env('JWT_PRIVATE_KEY_FILE')),
+                jwtKid:        env('JWT_KID') ?: null,
+            )
+        );
+
+        // Session login/logout controller for web + AJAX. Credentials verified by
+        // the User module; SessionPort (essential) carries the stateful session.
+        $container->bindInternal(SessionAuthController::class, static fn(ModuleContainer $c) =>
+            new SessionAuthController(
+                $c->make(AuthServiceContract::class),
+                $c->make(UserServiceContract::class),
+                $c->make(SessionPort::class),
             )
         );
     }
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
     {
-        // SecurityLayers are registered in the project bootstrap via
-        // ->withSecurity([... new JwtAuthLayer(...) ...]); nothing to hook here.
+        // Token verification (JWT / PAT) runs in the SecurityGateway via project
+        // ->withSecurity([...]). SESSION auth (web + AJAX) cannot run there — the
+        // session is only opened at after.load — so attach a session Identity just
+        // after StartSessionStage and before the route `auth` filter.
+        $http->hook('after.load', \Plugins\Auth\Infrastructure\Http\Stages\SessionAuthStage::class, priority: \Plugins\Auth\Infrastructure\Http\Stages\SessionAuthStage::PRIORITY);
+
+        // Control-plane maintenance command (auth:tokens:prune). Deferred so only
+        // CLI processes pay for it; the repository pins to the central connection
+        // (tokens are control-plane data, never tenant-scoped).
+        $cli->defer(static function (CliPipeline $cli): void {
+            $c = new ModuleContainer($cli->container());
+            $c->setScope('database.management');
+            (new \Plugins\Database\Provider())->register($c);
+
+            $repository = new PersonalAccessTokenRepository(
+                $c->make(DatabaseConnectionManagerContract::class)->default(),
+                env('AUTH_PAT_TABLE') ?: 'personal_access_tokens',
+            );
+
+            $cli->command(new \Plugins\Auth\Infrastructure\Cli\PruneAccessTokensCommand($repository));
+        });
+    }
+
+    /**
+     * Resolve a PEM signing key from either an inline env value or a file path
+     * (the file form is preferred in production — keys stay off the process
+     * environment). Returns null when neither is configured (symmetric mode).
+     */
+    private static function readKey(mixed $inline, mixed $file): ?string
+    {
+        $file = is_string($file) ? trim($file) : '';
+        if ($file !== '' && is_readable($file)) {
+            $contents = file_get_contents($file);
+            if ($contents !== false && trim($contents) !== '') {
+                return $contents;
+            }
+        }
+
+        $inline = is_string($inline) ? trim($inline) : '';
+
+        // Allow literal "\n" escapes from single-line .env values.
+        return $inline !== '' ? str_replace('\n', "\n", $inline) : null;
     }
 }

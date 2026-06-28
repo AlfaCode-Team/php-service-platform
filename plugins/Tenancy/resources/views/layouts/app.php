@@ -66,6 +66,7 @@ $csrf    = $csrf    ?? '';
         <h1>Tenancy</h1>
         <nav>
             <a href="/tenants">Your tenants</a>
+            <a href="/tenants/manage">Manage</a>
             <a href="/tenant/hosts">Hosts</a>
         </nav>
     </header>
@@ -125,6 +126,12 @@ $csrf    = $csrf    ?? '';
             // tenant picker
             myTenants:    () => request('GET', '/me/tenants'),
             selectTenant: (id) => request('POST', '/tenants/' + encodeURIComponent(id) + '/select'),
+            // tenant administration (platform-admin)
+            adminTenants:      () => request('GET', '/admin/tenants'),
+            adminTenant:       (id) => request('GET', '/admin/tenants/' + encodeURIComponent(id)),
+            adminCreateTenant: (payload) => request('POST', '/admin/tenants', payload),
+            adminUpdateTenant: (id, payload) => request('PUT', '/admin/tenants/' + encodeURIComponent(id), payload),
+            adminDeleteTenant: (id, dropDatabase) => request('DELETE', '/admin/tenants/' + encodeURIComponent(id), { drop_database: !!dropDatabase }),
             // hosts
             hosts:        () => request('GET', '/tenant/hosts'),
             addHost:      (payload) => request('POST', '/tenant/hosts', payload),

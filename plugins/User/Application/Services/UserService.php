@@ -24,6 +24,7 @@ use Plugins\User\API\DTOs\VerifyEmailDTO;
 use Plugins\User\API\IntegrationEvents\UserDeletedIntegrationEvent;
 use Plugins\User\API\IntegrationEvents\UserRegisteredIntegrationEvent;
 use Plugins\User\API\IntegrationEvents\UserUpdatedIntegrationEvent;
+use Plugins\User\Application\Ports\BreachChecker;
 use Plugins\User\Application\Ports\OutboxPort;
 use Plugins\User\Application\Ports\UserStore;
 use Plugins\User\Domain\Entities\User;
@@ -65,6 +66,7 @@ final class UserService implements UserServiceContract
         private readonly Identity $identity,
         private readonly CachePort $cache,
         private readonly AuditLogger $audit,
+        private readonly ?BreachChecker $breachChecker = null,
     ) {}
 
     public function list(ListUsersQuery $query): UserPage
@@ -88,6 +90,8 @@ final class UserService implements UserServiceContract
         if ($this->repository->existsByUsernameOrEmail($dto->username->value(), $dto->email->value())) {
             throw new ValidationException(['username' => 'Username or email is already taken.']);
         }
+
+        $this->assertNotBreached($dto->password);
 
         $this->collector->beginCollection();
         $this->transaction->begin();
@@ -137,6 +141,10 @@ final class UserService implements UserServiceContract
         $newEmail    = $dto->email?->value() ?? $user->email()->value();
         if ($this->repository->existsByUsernameOrEmail($newUsername, $newEmail, exceptUserId: $id)) {
             throw new ValidationException(['username' => 'Username or email is already taken.']);
+        }
+
+        if ($dto->password !== null) {
+            $this->assertNotBreached($dto->password);
         }
 
         $this->collector->beginCollection();
@@ -333,6 +341,22 @@ final class UserService implements UserServiceContract
         }
 
         return new ServiceException($code, layer: 'service.user', context: $context, previous: $e);
+    }
+
+    // ─── credential screening ────────────────────────────────────────────────
+
+    /**
+     * Reject a password known to appear in a breach corpus (NIST 800-63B).
+     * No-op when screening is disabled. The checker itself fails open on a
+     * provider outage, so this only ever throws on a confirmed breach hit.
+     */
+    private function assertNotBreached(string $plain): void
+    {
+        if ($this->breachChecker !== null && $this->breachChecker->isBreached($plain)) {
+            throw new ValidationException([
+                'password' => 'This password has appeared in a known data breach. Please choose a different one.',
+            ]);
+        }
     }
 
     // ─── authorization ──────────────────────────────────────────────────────

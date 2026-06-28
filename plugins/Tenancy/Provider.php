@@ -17,10 +17,12 @@ use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
 use Plugins\Tenancy\API\Contracts\InvitationServiceContract;
 use Plugins\Tenancy\API\Contracts\MembershipServiceContract;
 use Plugins\Tenancy\API\Contracts\RefreshTokenServiceContract;
+use Plugins\Tenancy\API\Contracts\TenantAdminServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantConnectionResolverContract;
 use Plugins\Tenancy\API\Contracts\TenantHostRegistryContract;
 use Plugins\Tenancy\API\Contracts\TenantHostServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantRegistryContract;
+use Plugins\Tenancy\Application\Ports\AuditReader;
 use Plugins\Tenancy\Application\Ports\AuditSink;
 use Plugins\Tenancy\Application\Ports\InvitationStore;
 use Plugins\Tenancy\Application\Ports\MembershipReader;
@@ -31,11 +33,14 @@ use Plugins\Tenancy\Application\Ports\TenantHostStore;
 use Plugins\Tenancy\Application\Services\InvitationService;
 use Plugins\Tenancy\Application\Services\MembershipService;
 use Plugins\Tenancy\Application\Services\RefreshTokenService;
+use Plugins\Tenancy\Application\Services\TenantAdminService;
 use Plugins\Tenancy\Application\Services\TenantHostService;
 use Plugins\Tenancy\Infrastructure\Audit\AuditTrail;
+use Plugins\Tenancy\Infrastructure\Persistence\AuditLogRepository;
 use Plugins\Tenancy\Infrastructure\Dns\SystemDnsResolver;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\AuthTokenController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\InvitationController;
+use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantAdminController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantHostController;
 use Plugins\User\API\Contracts\UserServiceContract;
@@ -91,6 +96,7 @@ final class Provider implements ModuleContract
             MembershipServiceContract::class,
             InvitationServiceContract::class,
             RefreshTokenServiceContract::class,
+            TenantAdminServiceContract::class,
         ];
     }
 
@@ -184,6 +190,10 @@ final class Provider implements ModuleContract
         $container->bindInternal(AuditSink::class, static fn ($c): AuditSink =>
             new AuditTrail($c->make(DatabaseConnectionManagerContract::class)->default()));
 
+        // Read/query side of the same central `audit_log` table.
+        $container->bindInternal(AuditReader::class, static fn ($c): AuditReader =>
+            new AuditLogRepository($c->make(DatabaseConnectionManagerContract::class)->default()));
+
         $container->bind(MembershipServiceContract::class, static fn ($c): MembershipServiceContract =>
             new MembershipService(
                 memberships: $c->make(MembershipReader::class),
@@ -194,6 +204,23 @@ final class Provider implements ModuleContract
 
         $container->bindInternal(TenantController::class, static fn ($c): TenantController =>
             new TenantController($c->make(MembershipServiceContract::class)));
+
+        // ── tenant administration (control-plane CRUD) ───────────────────────
+        // Provisions/updates/de-provisions tenants over HTTP — the JSON twin of
+        // the tenant:create / tenant:delete CLI commands. Central connection only.
+        $container->bind(TenantAdminServiceContract::class, static function ($c): TenantAdminServiceContract {
+            $template = env('TENANCY_TEMPLATE_PATH');
+
+            return new TenantAdminService(
+                connections: $c->make(DatabaseConnectionManagerContract::class),
+                crypto:      $c->make(EncryptionPort::class),
+                registry:    $c->make(TenantRegistryContract::class),
+                templatePath: (is_string($template) && $template !== '') ? $template : null,
+            );
+        });
+
+        $container->bindInternal(TenantAdminController::class, static fn ($c): TenantAdminController =>
+            new TenantAdminController($c->make(TenantAdminServiceContract::class)));
 
         // ── invitations (email onboarding) ───────────────────────────────────
         $container->bindInternal(InvitationStore::class, static fn ($c): InvitationStore =>
@@ -236,10 +263,16 @@ final class Provider implements ModuleContract
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
     {
-        // Route to the tenant DB right after the request container is built and
-        // before route filters / ExecuteStage touch tenant data. Priority 5
-        // keeps it ahead of declarative route filters at after.load.
-        $http->hook('after.load', TenantContextStage::class, priority: 5);
+        // Route to the tenant DB before RouteFilterStage / ExecuteStage touch
+        // tenant data. Ordering among after.load hooks (lower = outer):
+        //   StartSessionStage (20) → SessionAuthStage (22) → TenantContextStage (23)
+        //   → QueuedCookiesStage (25).
+        // Running AFTER session auth lets a SESSION-scoped tenant (Identity.tenantId
+        // populated from the session) route the connection, not just JWT/Host. It
+        // stays OUTER of the cookie-flush stage so the remembered-tenant cookie it
+        // queues is still written to the response. All after.load hooks run before
+        // the dedicated RouteFilterStage regardless of priority.
+        $http->hook('after.load', TenantContextStage::class, priority: 23);
 
         // Assign a self-signup user to their originating tenant. The User plugin
         // emits `user.registered` (via its outbox); the tenant rides on the event
