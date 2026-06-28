@@ -16,14 +16,37 @@
     "TenantConnectionResolverContract",
     "MembershipServiceContract",
     "InvitationServiceContract",
-    "RefreshTokenServiceContract"
+    "RefreshTokenServiceContract",
+    "TenantAdminServiceContract"
   ],
 
   "routes": [
     { "method": "GET",  "path": "/tenants",
       "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@index" },
+    { "method": "GET",  "path": "/tenants/manage",
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@manage" },
+    { "method": "GET",  "path": "/tenants/create",
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@create" },
+    { "method": "GET",  "path": "/tenants/{tenantId}/edit",
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@edit" },
     { "method": "GET",  "path": "/tenant/hosts",
       "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@hosts" },
+
+    { "method": "GET",    "path": "/ajx/admin/tenants",
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@index",
+      "filters": ["auth"] },
+    { "method": "POST",   "path": "/ajx/admin/tenants",
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@store",
+      "filters": [] },
+    { "method": "GET",    "path": "/ajx/admin/tenants/{tenantId}",
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@show",
+      "filters": ["auth"] },
+    { "method": "PUT",    "path": "/ajx/admin/tenants/{tenantId}",
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@update",
+      "filters": ["auth"] },
+    { "method": "DELETE", "path": "/ajx/admin/tenants/{tenantId}",
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@destroy",
+      "filters": ["auth"] },
 
     { "method": "GET",  "path": "/ajx/me/tenants",
       "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantController@mine",

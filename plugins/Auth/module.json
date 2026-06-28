@@ -4,16 +4,25 @@
     "solves": "auth.identity",
     "type": "module",
 
-    "requires": ["database.management", "crypto.services"],
+    "requires": ["database.management", "crypto.services", "user.management"],
     "exposes": ["Plugins\\Auth\\API\\Contracts\\AuthServiceContract"],
 
-    "routes": [],
+    "routes": [
+        { "method": "POST", "path": "/auth/login",  "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\SessionAuthController@login",  "filters": ["throttle:10,1"] },
+        { "method": "POST", "path": "/auth/logout", "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\SessionAuthController@logout" },
+        { "method": "GET",  "path": "/auth/me",     "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\SessionAuthController@me" }
+    ],
     "emits": [],
     "listens": [],
 
     "config": [
         { "key": "JWT_SECRET",     "type": "string", "required": false },
         { "key": "JWT_ALGO",       "type": "string", "required": false },
+        { "key": "JWT_ISSUER",     "type": "string", "required": false },
+        { "key": "JWT_AUDIENCE",   "type": "string", "required": false },
+        { "key": "JWT_PRIVATE_KEY",      "type": "string", "required": false },
+        { "key": "JWT_PRIVATE_KEY_FILE", "type": "string", "required": false },
+        { "key": "JWT_KID",        "type": "string", "required": false },
         { "key": "AUTH_PAT_TABLE", "type": "string", "required": false }
     ]
 }

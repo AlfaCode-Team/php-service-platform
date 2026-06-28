@@ -27,6 +27,28 @@ final class TenantPageController extends ViewController
         return $this->view('tenancy::tenants/index', ['title' => 'Your tenants'], 'tenancy::layouts/app');
     }
 
+    /** GET /tenants/manage — the platform-admin tenant fleet (CRUD). */
+    public function manage(): Response
+    {
+        return $this->view('tenancy::tenants/manage', ['title' => 'Manage tenants'], 'tenancy::layouts/app');
+    }
+
+    /** GET /tenants/create — the new-tenant provisioning form. */
+    public function create(): Response
+    {
+        return $this->view('tenancy::tenants/create', ['title' => 'New tenant'], 'tenancy::layouts/app');
+    }
+
+    /** GET /tenants/{tenantId}/edit — edit a tenant's metadata. */
+    public function edit(string $tenantId): Response
+    {
+        return $this->view(
+            'tenancy::tenants/edit',
+            ['title' => 'Edit tenant', 'tenantId' => $tenantId],
+            'tenancy::layouts/app',
+        );
+    }
+
     /** GET /tenant/hosts — manage the current tenant's custom domains. */
     public function hosts(): Response
     {
