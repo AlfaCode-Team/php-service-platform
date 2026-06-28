@@ -51,14 +51,20 @@ final class PersonalAccessTokenLayer implements SecurityLayerContract
         }
 
         if ($record === null) {
-            return SecurityVerdict::deny(401, 'Access token is invalid or revoked.');
+            return SecurityVerdict::deny(401, 'Access token is invalid, revoked, or expired.');
         }
 
+        // Record last use — best-effort, never blocks the request.
+        $this->tokens->touch($record['id']);
+
+        // Empty tenant = unscoped (central connection), consistent with the JWT
+        // layer and TenantContextStage. A PAT is a control-plane credential; it
+        // does not silently bind to a tenant DB.
         $identity = new Identity(
             userId:      $record['user_id'],
-            tenantId:    'default',
+            tenantId:    '',
             roles:       [],
-            permissions: [],
+            permissions: $record['abilities'],
             tokenType:   'api_key',
         );
 

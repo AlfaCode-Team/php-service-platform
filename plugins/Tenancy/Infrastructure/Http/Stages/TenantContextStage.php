@@ -91,7 +91,10 @@ final class TenantContextStage implements HttpStageContract
             $fromCookie = true;
         }
 
-        // Unscoped request: central DB stays bound, nothing to route.
+        // Unscoped request (apex/central host, reserved sub-domain, or a guest in
+        // claim mode): no tenant to route — keep the central DatabasePort bound and
+        // continue. Without this, resolver->for('') would throw UnknownTenant and
+        // every control-plane/public request (login, OAuth2, marketing) would 404.
         if ($tenantId === '') {
             return $next($request);
         }
@@ -162,7 +165,7 @@ final class TenantContextStage implements HttpStageContract
             }
         }
 
-        return false;
+        return false; 
     }
 
     /**
@@ -197,7 +200,7 @@ final class TenantContextStage implements HttpStageContract
         $jar->queue(
             self::COOKIE,
             json_encode(['t' => $tenantId, 'u' => $userId]),
-            60 * 12, // 30 days
+            60 * 60 * 24 * 30, // 30 days
         );
     }
 

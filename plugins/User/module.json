@@ -4,7 +4,7 @@
     "solves": "user.management",
     "type": "module",
 
-    "requires": ["database.management", "crypto.services", "cache.redis", "view.rendering"],
+    "requires": ["database.management", "crypto.services", "cache.redis", "view.rendering", "http.client"],
     "exposes": ["Plugins\\User\\API\\Contracts\\UserServiceContract"],
 
     "views": "resources/views",
@@ -32,6 +32,8 @@
     "commands": ["Plugins\\User\\Infrastructure\\Cli\\RelayUserOutboxCommand"],
 
     "config": [
-        { "key": "HASH_BCRYPT_COST", "type": "int", "required": false }
+        { "key": "HASH_BCRYPT_COST", "type": "int", "required": false },
+        { "key": "USER_BREACH_CHECK", "type": "bool", "required": false },
+        { "key": "USER_BREACH_THRESHOLD", "type": "int", "required": false }
     ]
 }

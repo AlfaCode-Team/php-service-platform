@@ -9,7 +9,7 @@ namespace Plugins\User\Domain\ValueObjects;
  * any future admin/reset flow validate identically.
  *
  * Rules (enterprise baseline, all configurable):
- *   - length 12–72 bytes (72 = bcrypt's hard input limit; longer is silently
+ *   - length 8–72 bytes (72 = bcrypt's hard input limit; longer is silently
  *     truncated by bcrypt, so we reject it rather than create a false sense of
  *     entropy)
  *   - at least 3 of 4 character classes (lower, upper, digit, symbol)
@@ -21,7 +21,7 @@ namespace Plugins\User\Domain\ValueObjects;
  */
 final readonly class PasswordPolicy
 {
-    private const MIN = 12;
+    private const MIN = 8;
     private const MAX = 72; // bcrypt input limit (bytes)
 
     /** A tiny built-in deny list; replace/extend with a breach API in production. */
