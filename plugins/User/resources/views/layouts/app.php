@@ -4,12 +4,12 @@
  *
  * Receives:
  *   @var string $title    Page title.
- *   @var string $apiBase  Base path of the JSON API (e.g. /api/users).
+ *   @var string $apiBase  Base path of the JSON API (e.g. /ajx/users).
  *   @var string $csrf     CSRF token (HMAC, bound to the session cookie).
  *   @var string $view     Rendered child-view HTML (injected by the renderer).
  */
 $title   = $title   ?? 'Users';
-$apiBase = $apiBase ?? '/api/users';
+$apiBase = $apiBase ?? '/ajx/users';
 $csrf    = $csrf    ?? '';
 ?>
 <!DOCTYPE html>
@@ -62,6 +62,8 @@ $csrf    = $csrf    ?? '';
         <nav>
             <a href="/users">All users</a>
             <a href="/users/create">Create</a>
+            <a href="/account/settings">Settings</a>
+            <a href="/account/feedback">Feedback</a>
         </nav>
     </header>
 

@@ -61,8 +61,8 @@ Turns an authenticated but *unscoped* user into a tenant-scoped session. Exposed
 as routes (both behind the `auth` filter):
 
 ```
-GET  /api/me/tenants                 → the tenant picker (active seats only)
-POST /api/tenants/{tenantId}/select  → re-mint a tenant-scoped token
+GET  /ajx/me/tenants                 → the tenant picker (active seats only)
+POST /ajx/tenants/{tenantId}/select  → re-mint a tenant-scoped token
 ```
 
 `selectTenant()` **re-verifies** the membership against central `user_tenants`
@@ -103,7 +103,7 @@ Wired endpoint (behind the `auth` filter; the email is read from the User
 identity store, never the request body):
 
 ```
-POST /api/invitations/accept   { "token": "…" }   → { "tenantId": "…" }
+POST /ajx/invitations/accept   { "token": "…" }   → { "tenantId": "…" }
 ```
 
 This is why Tenancy `requires: ["user.management"]` — `InvitationController`
@@ -136,8 +136,8 @@ revoked seat can't refresh back in. Tunable via `TENANCY_REFRESH_TTL` (default
 Wired endpoints (UNAUTHENTICATED — the refresh token in the body is the credential):
 
 ```
-POST /api/auth/refresh   { "token": "…" }   → { accessToken, expiresIn, refreshToken, refreshExpiresAt, tenantId, role }
-POST /api/auth/logout    { "token": "…" }   → 204  (revoke this session)
+POST /ajx/auth/refresh   { "token": "…" }   → { accessToken, expiresIn, refreshToken, refreshExpiresAt, tenantId, role }
+POST /ajx/auth/logout    { "token": "…" }   → 204  (revoke this session)
 ```
 
 `issue()` (at login / after `selectTenant`) is called from your Auth flow — there

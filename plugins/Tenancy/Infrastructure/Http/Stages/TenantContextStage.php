@@ -116,8 +116,11 @@ final class TenantContextStage implements HttpStageContract
         // Override the Database plugin's binding for THIS request only.
         $container->instance(DatabasePort::class, $db);
 
+
         // Expose the resolved tenant to controllers without re-identifying it.
         $request = $request->withAttribute('tenant', $tenantId);
+
+        $container->instance('tenant.current', $tenantId); // a plain string, no Tenancy import
 
         // Remember the active tenant for next time — encrypted + bound to this
         // user so it cannot be replayed across users. Still a hint: every request

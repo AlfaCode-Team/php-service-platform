@@ -10,8 +10,11 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Events\EventBus;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Cli\CliPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\HttpPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Worker\WorkerPipeline;
+use Plugins\Pageflow\API\Contracts\PageflowSharerContract;
 use Plugins\Pageflow\Http\PageflowResponder;
+use Plugins\Pageflow\Http\PageflowShareStage;
 use Plugins\Pageflow\Http\PageflowVersionStage;
+use Plugins\Pageflow\Http\RegistryPageflowSharer;
 
 /**
  * Pageflow plugin — server side of the Inertia-style SPA bridge.
@@ -43,24 +46,26 @@ final class Provider implements ModuleContract
 
     public function register(ModuleContainer $container): void
     {
-        $container->bind(PageflowResponder::class, static function () {
-            $rootView = '';
-            $viewPath = env('PAGEFLOW_ROOT_VIEW') ?: '';
-            if ($viewPath !== '' && is_file($viewPath)) {
-                $rootView = (string) file_get_contents($viewPath);
-            }
-
+        // Per-request singleton so share()/mergeShared() and render() see one bag.
+        $container->singleton(PageflowResponder::class, static function () {
             return new PageflowResponder(
-                version:  env('PAGEFLOW_VERSION') ?: '1',
-                rootView: $rootView,
-                appId:    env('PAGEFLOW_APP_ID') ?: 'app',
+                version:    env('PAGEFLOW_VERSION') ?: '1',
+                layoutPath: env('PAGEFLOW_ROOT_VIEW') ?: '',
+                appId:      env('PAGEFLOW_APP_ID') ?: 'app',
             );
         });
+
+        // Default sharer: runs every contributor registered via pageflow_share().
+        // Bind your own PageflowSharerContract in the project to override.
+        $container->bind(PageflowSharerContract::class, static fn() => new RegistryPageflowSharer());
     }
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
     {
         // Stale-asset guard runs before modules load (cheap 409 reject).
         $http->hook('after.security', PageflowVersionStage::class, priority: 18);
+
+        // Populate shared props once modules are loaded (do_action('pageflow_share')).
+        $http->hook('after.load', PageflowShareStage::class, priority: 45);
     }
 }

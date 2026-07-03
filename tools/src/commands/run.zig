@@ -80,12 +80,28 @@ pub fn run(allocator: std.mem.Allocator, io: Io, env: *EnvMap, args: []const []c
         return 1;
     };
 
-    // Resolve the kernel autoload and export it for the child PHP process.
-    if (try services.resolveAutoload(allocator, io, env)) |autoload| {
-        try env.put("PSP_GLOBAL_AUTOLOAD", autoload);
+    // Resolve the kernel autoload and export it for the child PHP process. Dupe it
+    // first: it may be a slice into the env map's storage, which env.put() can
+    // reallocate — leaving the original slice dangling.
+    const autoload: ?[]const u8 = if (try services.resolveAutoload(allocator, io, env)) |a|
+        try allocator.dupe(u8, a)
+    else
+        null;
+    if (autoload) |a| {
+        try env.put("PSP_GLOBAL_AUTOLOAD", a);
     } else if (env.get("PSP_GLOBAL_AUTOLOAD") == null) {
         prompt.warn("No kernel autoload found — relying on the project's own resolver.");
         prompt.muted("Set HKM_KERNEL_HOME or PSP_GLOBAL_AUTOLOAD if PHP cannot find the kernel.");
+    }
+
+    // Export HKM_KERNEL_HOME for the child too, so a runtime getenv('HKM_KERNEL_HOME')
+    // resolves — e.g. the plugin Support/helpers.php requires that `hkm plugins`
+    // wires for kernel-home plugins reference it. Only set when we can resolve it
+    // and the caller has not already provided one.
+    if (env.get("HKM_KERNEL_HOME") == null) {
+        if (try services.resolveKernelHome(allocator, io, env, autoload)) |home| {
+            try env.put("HKM_KERNEL_HOME", home);
+        }
     }
 
     const php = env.get("HKM_PHP_BIN") orelse "php";
@@ -389,5 +405,5 @@ fn printHelp() void {
     prompt.note("hkm run shop --host=0.0.0.0");
     prompt.note("hkm run shop --swoole --port=9502");
     prompt.note("hkm run --cli migrate --seed");
-    prompt.outro("The kernel autoload is exported as PSP_GLOBAL_AUTOLOAD for you");
+    prompt.outro("Exports PSP_GLOBAL_AUTOLOAD + HKM_KERNEL_HOME for the child process");
 }

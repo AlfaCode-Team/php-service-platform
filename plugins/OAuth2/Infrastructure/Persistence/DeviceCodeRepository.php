@@ -127,7 +127,7 @@ final class DeviceCodeRepository implements DeviceCodeStore
 
         $scopes = json_decode((string) ($row['scopes'] ?? '[]'), true);
 
-        return new DeviceCode(
+        return DeviceCode::of(
             id:           (string) $row['id'],
             userCode:     (string) $row['user_code'],
             clientId:     (string) $row['client_id'],

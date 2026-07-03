@@ -109,7 +109,7 @@ final class AuthorizationService
         $codeId   = bin2hex(random_bytes(16));
         $expires  = (new \DateTimeImmutable())->add(new \DateInterval('PT' . max(30, $this->codeTtl) . 'S'));
 
-        $code = new AuthCode(
+        $code = AuthCode::of(
             id:                  $codeId,
             clientId:            $req->client->id,
             userId:              $userId,

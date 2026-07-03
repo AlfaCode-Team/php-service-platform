@@ -6,6 +6,7 @@ namespace Plugins\Auth\Infrastructure\Persistence;
 
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\RepositoryException;
+use Plugins\Auth\Domain\Entities\PersonalAccessToken;
 
 /**
  * Persists personal access tokens (hashed) via DatabasePort only.
@@ -32,17 +33,19 @@ final class PersonalAccessTokenRepository
         array $abilities = [],
         ?\DateTimeImmutable $expiresAt = null,
     ): void {
+        $token = PersonalAccessToken::issue($id, $userId, $name, $tokenHash, $abilities, $expiresAt);
+
         try {
             $this->db->execute(
                 "INSERT INTO {$this->table} (id, user_id, name, token_hash, abilities, expires_at, created_at)
                  VALUES (:id, :user_id, :name, :token_hash, :abilities, :expires_at, :created_at)",
                 [
-                    'id'         => $id,
-                    'user_id'    => $userId,
-                    'name'       => $name,
-                    'token_hash' => $tokenHash,
-                    'abilities'  => $abilities === [] ? null : json_encode(array_values($abilities)),
-                    'expires_at' => $expiresAt?->format('Y-m-d H:i:s'),
+                    'id'         => $token->id(),
+                    'user_id'    => $token->userId(),
+                    'name'       => $token->name(),
+                    'token_hash' => $token->tokenHash(),
+                    'abilities'  => $token->abilitiesColumn(),
+                    'expires_at' => $token->expiresAt()?->format('Y-m-d H:i:s'),
                     'created_at' => (new \DateTimeImmutable())->format('Y-m-d H:i:s'),
                 ]
             );
@@ -72,24 +75,17 @@ final class PersonalAccessTokenRepository
             return null;
         }
 
+        $token = PersonalAccessToken::reconstitute($row);
+
         // Enforce expiry in PHP (driver-portable — no NOW() dialect branching).
-        $expiresAt = $row['expires_at'] ?? null;
-        if ($expiresAt !== null && $expiresAt !== '' && strtotime((string) $expiresAt) <= time()) {
+        if ($token->isExpired()) {
             return null;
         }
 
-        $abilities = [];
-        if (!empty($row['abilities'])) {
-            $decoded = json_decode((string) $row['abilities'], true);
-            if (is_array($decoded)) {
-                $abilities = array_values(array_filter($decoded, 'is_string'));
-            }
-        }
-
         return [
-            'id'        => (string) $row['id'],
-            'user_id'   => (string) $row['user_id'],
-            'abilities' => $abilities,
+            'id'        => $token->id(),
+            'user_id'   => $token->userId(),
+            'abilities' => $token->abilities(),
         ];
     }
 

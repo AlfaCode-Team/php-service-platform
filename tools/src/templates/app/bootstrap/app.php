@@ -50,7 +50,7 @@ declare(strict_types=1);
 // PSR-4 roots. The guard keeps this safe even when an entry point already loaded
 // the helper.
 // -----------------------------------------------------------------------------
-if (!function_exists('psp_require_kernel_autoload')) {
+if (!function_exists('psp_require_kernel_autoload') || !function_exists('psp_kernel_home')) {
     require_once __DIR__ . '/kernel-autoload.php';
 }
 psp_require_kernel_autoload();

@@ -59,7 +59,7 @@ final class AuthCodeRepository implements AuthCodeStore
 
         $scopes = json_decode((string) ($row['scopes'] ?? '[]'), true);
 
-        return new AuthCode(
+        return AuthCode::of(
             id:                  (string) $row['id'],
             clientId:            (string) $row['client_id'],
             userId:              (string) $row['user_id'],
