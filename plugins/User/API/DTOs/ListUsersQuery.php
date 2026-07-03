@@ -9,7 +9,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Request;
 /**
  * Keyset-pagination query for listing users.
  *
- *   GET /api/users?limit=50&after=<last user_id seen>
+ *   GET /ajx/users?limit=50&after=<last user_id seen>
  *
  * Keyset (cursor) pagination is O(1) at any depth — unlike OFFSET, which scans
  * and skips. `after` is the opaque user_id of the last row from the previous

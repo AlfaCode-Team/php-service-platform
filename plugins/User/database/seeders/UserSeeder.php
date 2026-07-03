@@ -32,7 +32,8 @@ final class UserSeeder implements SeederInterface
             'username'      => 'admin',
             'email'         => 'admin@example.com',
             'password_hash' => $this->hasher->make('password'),
-            'status'        => 1, // active
+            // Verified email = the login gate; set it so the admin can log in.
+            'email_verified_at' => $now,
             'created_at'    => $now,
             'updated_at'    => $now,
         ]);

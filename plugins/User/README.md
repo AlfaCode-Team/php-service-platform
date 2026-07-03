@@ -22,15 +22,16 @@ adapters behind ports, and a published API contract that other modules consume.
 4. [Data model](#data-model)
 5. [HTTP API](#http-api)
 6. [Web UI (AJAX + CSRF)](#web-ui-ajax--csrf)
-7. [Security model](#security-model)
-8. [Reliability: the transactional outbox](#reliability-the-transactional-outbox)
-9. [Installation & wiring](#installation--wiring)
-10. [Configuration](#configuration)
-11. [Using it from another plugin](#using-it-from-another-plugin)
-12. [Using it from a project](#using-it-from-a-project)
-13. [CLI](#cli)
-14. [Testing](#testing)
-15. [Extending the pattern](#extending-the-pattern)
+7. [Tenant-scoped sub-resources (feedback & settings)](#tenant-scoped-sub-resources-feedback--settings)
+8. [Security model](#security-model)
+9. [Reliability: the transactional outbox](#reliability-the-transactional-outbox)
+10. [Installation & wiring](#installation--wiring)
+11. [Configuration](#configuration)
+12. [Using it from another plugin](#using-it-from-another-plugin)
+13. [Using it from a project](#using-it-from-a-project)
+14. [CLI](#cli)
+15. [Testing](#testing)
+16. [Extending the pattern](#extending-the-pattern)
 
 ---
 
@@ -38,14 +39,16 @@ adapters behind ports, and a published API contract that other modules consume.
 
 | Capability | Entry point | Notes |
 |---|---|---|
-| Register a user | `POST /api/users` | Public, rate-limited; emits `user.registered` |
-| List users | `GET /api/users` | Admin-only; keyset paginated |
-| Show a user | `GET /api/users/{id}` | Self or `user:read-any` |
-| Update (partial) | `PUT/PATCH /api/users/{id}` | Self or `user:update-any`; optimistic-locked; emits `user.updated` |
-| Verify email | `POST /api/users/{id}/verify-email` | Pending → Active; emits `user.updated` |
-| Soft-delete | `DELETE /api/users/{id}` | Self or `user:delete-any`; emits `user.deleted` |
-| Verify credentials | `UserServiceContract::verifyCredentials()` | Timing-safe, lockout, rehash-on-login (used by an Auth module) |
-| HTML UI | `GET /users`, `/users/create`, `/users/{id}`, `/users/{id}/edit` | AJAX-driven, cookie auth, CSRF on every form |
+| Register a user | `POST /ajx/users` | Public, rate-limited; emits `user.registered` |
+| List users | `GET /ajx/users` | Admin-only; keyset paginated |
+| Show a user | `GET /ajx/users/{id}` | Self or `user:read-any` |
+| Update (partial) | `PUT/PATCH /ajx/users/{id}` | Self or `user:update-any`; optimistic-locked; emits `user.updated` |
+| Verify email | `POST /ajx/users/{id}/verify-email` | Sets `email_verified_at` (the login gate); emits `user.updated` |
+| Soft-delete | `DELETE /ajx/users/{id}` | Self or `user:delete-any`; emits `user.deleted` |
+| Verify credentials | `UserServiceContract::verifyCredentials()` | Timing-safe, lockout, rehash-on-login; requires a verified email |
+| **Feedback** | `POST/GET/PATCH /ajx/feedback[...]` | TENANT-scoped; submit (any user) + admin triage. See [Tenant-scoped sub-resources](#tenant-scoped-sub-resources-feedback--settings) |
+| **Settings** | `GET/PUT /ajx/{profile,preferences,privacy,notification-preferences}` | TENANT-scoped, self-only; one consolidated service |
+| HTML UI | `GET /users[...]`, `/account/settings`, `/account/feedback` | AJAX-driven, cookie auth, CSRF on every form |
 
 ---
 
@@ -69,8 +72,9 @@ HTTP ─▶ UserController (thin)              CLI ─▶ user:outbox:relay
    UserStore (port)  ◀── UserRepository (central DatabasePort, global, version-locked)
           │
    User aggregate (Domain — zero external imports)
-   ├─ UserId (monotonic ULID), Username, Email, UserStatus, PasswordPolicy
+   ├─ UserId (monotonic ULID), Username, Email, PasswordPolicy
    └─ records UserRegistered/Updated/Deleted domain events
+                (login gate = email_verified_at; no status column)
 ```
 
 **The five GDA access rules hold:** Controller → Service (contract only),
@@ -86,30 +90,37 @@ plugins/User/
 ├── module.json                       single source of truth (routes, requires, config)
 ├── Provider.php                      DI wiring + CLI registration
 ├── API/
-│   ├── Contracts/UserServiceContract.php       published interface
+│   ├── Contracts/UserServiceContract.php       the ONLY published interface
 │   ├── DTOs/                                    Register/Update/VerifyEmail/User/ListUsersQuery/UserPage
-│   └── IntegrationEvents/                       UserRegistered/Updated/Deleted + GenericIntegrationEvent
+│   │                                            + Submit/ListFeedbackQuery/FeedbackPage
+│   │                                            + Update{Profile,Preferences,Privacy,NotificationPreferences}
+│   └── IntegrationEvents/                       UserRegistered/Updated/Deleted, FeedbackSubmitted, Generic
 ├── Application/
-│   ├── Contracts? (none)
-│   ├── Ports/ UserStore.php, OutboxPort.php     internal DIP seams (testability)
-│   └── Services/UserService.php                 transaction + events + authz + lockout
+│   ├── Ports/ UserStore, OutboxPort, FeedbackStore   internal DIP seams (testability)
+│   └── Services/  UserService, FeedbackService, UserSettingsService
 ├── Domain/
-│   ├── Entities/User.php                        aggregate, private ctor, named constructors
+│   ├── Entities/  User, FeedbackEntry, UserProfile, UserPreferences,
+│   │              UserPrivacySettings, UserNotificationPreferences
 │   ├── Events/                                   UserRegistered/Updated/Deleted domain events
 │   ├── Exceptions/DuplicateUserException.php
-│   └── ValueObjects/  UserId, Ulid, Username, Email, UserStatus, PasswordPolicy
+│   └── ValueObjects/  UserId, Ulid, Username, Email, PasswordPolicy,
+│                      Feedback{Id,Category,Rating,Status,Message}, Theme, ProfileVisibility
 ├── Infrastructure/
 │   ├── Audit/AuditLogger.php
 │   ├── Cli/RelayUserOutboxCommand.php           user:outbox:relay
-│   ├── Http/Controllers/  UserController, UserPageController
+│   ├── Http/Controllers/  UserController, UserPageController,
+│   │                      FeedbackController, UserSettingsController
 │   ├── Outbox/  OutboxWriter, OutboxRelay
-│   └── Persistence/UserRepository.php           DatabasePort only
+│   └── Persistence/  UserRepository (central), FeedbackRepository + UserSettingsRepository (tenant)
 ├── config/user.php
 ├── database/
-│   ├── migrations/  create_user_table, create_user_outbox_table
+│   ├── migrations/        create_user_table, create_user_outbox_table   (CENTRAL)
+│   ├── tenant-template/   user_profiles, user_privacy_settings, user_preferences,
+│   │                      user_notification_preferences, user_feedback   (per-TENANT)
 │   ├── seeders/UserSeeder.php
 │   └── factories/UserFactory.php
-└── resources/views/  layouts/app.php, users/{index,create,edit,show}.php
+└── resources/views/  layouts/app.php, users/{index,create,edit,show}.php,
+                      account/{settings,feedback}.php
 ```
 
 ---
@@ -126,18 +137,20 @@ alters schema.
 | `user_id` | char(31) | **public** ULID identifier |
 | `username` | varchar(50) | **globally** unique |
 | `email` | varchar(150) | **globally** unique, lowercased |
-| `password_hash` | char(60) null | bcrypt (exactly 60 chars); null when only an external IdP is used |
-| `auth_provider` | varchar(30) | `local`\|`google`\|`github`\|`saml` |
-| `provider_subject` | varchar(191) null | `sub`/`oid` from the external IdP |
-| `is_platform_admin` | bool | global super-admin |
+| `password_hash` | char(60) | bcrypt (exactly 60 chars) |
 | `remember_token` | char(64) null | SHA-256 of the remember-me token |
-| `status` | tinyint | 1=active, 2=inactive, 3=pending |
 | `version` | int unsigned | optimistic-lock version |
-| `email_verified_at` | timestamp null | set on confirmation |
-| `last_login_at` | timestamp null | updated on successful login |
+| `email_verified_at` | timestamp null | set on confirmation — **this is the login gate** |
 | `created_at`/`updated_at`/`deleted_at` | timestamps | soft-delete aware |
 
-Uniqueness is **global** (`uniq_username`, `uniq_email`, `uniq_provider_subject`).
+Uniqueness is **global** (`uniq_username`, `uniq_email`).
+
+> **Login gate = a verified email.** There is no `status` column. A user can
+> authenticate only once `email_verified_at` is set (`UserService::verifyCredentials`
+> checks `User::canLogin()`); "disable an account" is done via soft delete. The
+> earlier `status` / `auth_provider` / `provider_subject` / `is_platform_admin` /
+> `last_login_at` columns were removed to keep the table lean — federation and
+> platform-admin, if needed, belong in their own tables/claims.
 
 The repository and the `user_outbox` writer are **pinned to the central
 connection** (the `ConnectionManager` default) so identity I/O always targets the
@@ -153,7 +166,7 @@ All API responses use the framework envelope:
 ```jsonc
 // success
 { "data": { "id": "01J…", "username": "jane", "email": "jane@example.com",
-            "status": "active", "emailVerified": true, "createdAt": "2026-…" } }
+            "emailVerified": true, "createdAt": "2026-…" } }
 
 // list (keyset paginated)
 { "data": [ … ], "meta": { "count": 25, "limit": 25, "has_more": true,
@@ -166,7 +179,7 @@ All API responses use the framework envelope:
 ### Register
 
 ```bash
-curl -X POST https://app.example.com/api/users \
+curl -X POST https://app.example.com/ajx/users \
   -H 'Content-Type: application/json' \
   -d '{"username":"jane","email":"jane@example.com","password":"C0rrectHorse!"}'
 # 201 → { "data": { … } }   emits user.registered
@@ -175,14 +188,14 @@ curl -X POST https://app.example.com/api/users \
 ### List (paginate)
 
 ```bash
-curl 'https://app.example.com/api/users?limit=50&after=01J…' \
+curl 'https://app.example.com/ajx/users?limit=50&after=01J…' \
   -H 'Authorization: Bearer <token>'    # or same-site session cookie
 ```
 
 ### Update (partial / PATCH semantics)
 
 ```bash
-curl -X PUT https://app.example.com/api/users/01J… \
+curl -X PUT https://app.example.com/ajx/users/01J… \
   -H 'Content-Type: application/json' -H 'X-CSRF-Token: …' \
   -d '{"email":"new@example.com"}'      # only changed fields; bumps version
 ```
@@ -196,7 +209,7 @@ A duplicate username/email → **HTTP 409/422** (DuplicateUserException).
 
 `UserPageController` renders four pages (`/users`, `/users/create`,
 `/users/{id}`, `/users/{id}/edit`). Each is a thin HTML shell that hydrates over
-AJAX against `/api/users`. Authentication is **same-site cookie** (no bearer
+AJAX against `/ajx/users`. Authentication is **same-site cookie** (no bearer
 token in the browser).
 
 **CSRF on every form:** the page controller (via `ViewController` →
@@ -209,6 +222,52 @@ cookie. Each page exposes it as `<meta name="csrf-token">` and a hidden
 > `bindCookie: 'csrf_bind'`, the same `lifetime` as `CSRF_LIFETIME`, and **do not
 > exempt `/api`** (the UI authenticates by cookie, so the write endpoints must be
 > CSRF-checked). Otherwise tokens are sent but never validated.
+
+---
+
+## Tenant-scoped sub-resources (feedback & settings)
+
+Beyond central identity, the plugin owns per-user data that lives in the
+**tenant** database (not central): **feedback** and the four **settings**
+singletons (profile, preferences, privacy, notification preferences).
+
+Key differences from the identity tables:
+
+- **Tenant-routed, not central.** Their repositories take the request's
+  `DatabasePort` **after** `TenantContextStage` rebinds it — so rows land in the
+  caller's tenant DB. Schema ships in `database/tenant-template/` and is applied
+  per-tenant by the Tenancy tooling, **not** `migrate:run`.
+- **`user_id` is the ULID** (`char(31)`, the central `users.user_id`) — a soft
+  reference, no cross-DB foreign key.
+- **Guarded by `auth` + `tenant` filters.** Every route declares
+  `"filters": ["auth", "tenant"]`; the `tenant` filter (from the Tenancy plugin)
+  returns **409** when no tenant is active, so these never hit central by mistake.
+- **Self-scoped.** The user id always comes from `Identity`, never the body.
+
+### Feedback — full CRUD
+
+| Verb | Path | Who | Service |
+| --- | --- | --- | --- |
+| Create | `POST /ajx/feedback` | any authenticated user (`throttle:5,1`) | `FeedbackService::submit` |
+| List | `GET /ajx/feedback` | `feedback:manage` (admin triage) | `list` |
+| Read one | `GET /ajx/feedback/{id}` | self or `feedback:manage` | `find` |
+| Update status | `PATCH /ajx/feedback/{id}` | `feedback:manage` (forward-only) | `updateStatus` |
+
+Emits `feedback.submitted` (dispatched **directly** after the write — not via the
+outbox, since the write is a single tenant-scoped insert).
+
+### Settings — read/update, one service
+
+`UserSettingsService` + `UserSettingsRepository` back all four resources
+(`getX`/`updateX`); each is `GET/PUT /ajx/{profile,preferences,privacy,notification-preferences}`,
+self-scoped, idempotent `PUT` via the portable `upsert`, audited on write. Demo
+UI at `/account/settings` and `/account/feedback`.
+
+> **Internal, not published.** Feedback + settings are consumed only by this
+> plugin's own controllers, so their services are bound `bindInternal` and are
+> **not** in `exposes()` — only `UserServiceContract` is cross-module. Services
+> return the domain **entity**; the controller serialises via `entity->toArray()`
+> (no separate output DTO).
 
 ---
 
@@ -429,9 +488,11 @@ $svc = new UserService(
 );
 ```
 
-See `tests/Unit/Plugins/User/` (13 tests): registration, duplicate rejection,
-weak-password rejection, authorization (self vs admin), update/delete event
-emission, login lockout, and rehash-on-login. Run:
+See `tests/Unit/Plugins/User/`: identity (registration, duplicate rejection,
+weak-password rejection, authorization, update/delete events, login lockout,
+rehash-on-login), `FeedbackServiceTest` (auth/ownership/triage, forward-only
+status, rating validation), and `UserSettingsServiceTest` (all four settings,
+round-tripped through the real repository against a stateful in-memory DB). Run:
 
 ```bash
 vendor/bin/phpunit tests/Unit/Plugins/User

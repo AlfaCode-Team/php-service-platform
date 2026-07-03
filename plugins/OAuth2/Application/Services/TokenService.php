@@ -241,7 +241,7 @@ final class TokenService
         $rawRefresh = $this->issuer->refreshToken();
 
         $family = $familyId ?? bin2hex(random_bytes(16));
-        $token  = new RefreshToken(
+        $token  = RefreshToken::of(
             id:        bin2hex(random_bytes(16)),
             familyId:  $family,
             clientId:  $client->id,

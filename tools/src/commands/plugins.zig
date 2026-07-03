@@ -27,7 +27,7 @@ const Located = sources.Located;
 const Enabled = boot.Enabled;
 const Activation = boot.Activation;
 
-const Action = enum { analyze, enable, disable, update, create, delete, make_migration, make_seeder, make_factory };
+const Action = enum { analyze, verify, enable, disable, update, create, delete, make_migration, make_seeder, make_factory };
 
 pub fn run(allocator: std.mem.Allocator, io: Io, env: *EnvMap, args: []const []const u8) !u8 {
     var action: Action = .analyze;
@@ -35,6 +35,7 @@ pub fn run(allocator: std.mem.Allocator, io: Io, env: *EnvMap, args: []const []c
     var essential = false;
     var dry_run = false;
     var want_kernel = false;
+    var fix = false;
 
     var operands: std.ArrayList([]const u8) = .empty;
     var saw_action = false;
@@ -50,6 +51,8 @@ pub fn run(allocator: std.mem.Allocator, io: Io, env: *EnvMap, args: []const []c
             dry_run = true;
         } else if (std.mem.eql(u8, a, "--kernel") or std.mem.eql(u8, a, "-k")) {
             want_kernel = true;
+        } else if (std.mem.eql(u8, a, "--fix") or std.mem.eql(u8, a, "-f")) {
+            fix = true;
         } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
             printHelp();
             return 0;
@@ -67,6 +70,7 @@ pub fn run(allocator: std.mem.Allocator, io: Io, env: *EnvMap, args: []const []c
 
     switch (action) {
         .analyze => return analyze(allocator, io, env, op(ops, 0), show_all),
+        .verify => return verifyPlugins(allocator, io, env, op(ops, 0), fix),
         .enable, .disable => {
             if (ops.len == 0) {
                 prompt.err("Usage: hkm plugins enable|disable <plugin> [path|name] [--essential] [--dry-run]");
@@ -141,6 +145,8 @@ fn actionFromWordOpt(a: []const u8) ?Action {
     if (std.mem.eql(u8, a, "make:factory") or std.mem.eql(u8, a, "make-factory") or
         std.mem.eql(u8, a, "factory")) return .make_factory;
     if (std.mem.eql(u8, a, "list") or std.mem.eql(u8, a, "ls")) return .analyze;
+    if (std.mem.eql(u8, a, "verify") or std.mem.eql(u8, a, "check") or std.mem.eql(u8, a, "doctor") or
+        std.mem.eql(u8, a, "scan") or std.mem.eql(u8, a, "audit")) return .verify;
     return null;
 }
 
@@ -274,6 +280,205 @@ fn renderEnabledTable(allocator: std.mem.Allocator, items: []const Enabled, acti
     prompt.table(allocator, &.{ "Plugin", "Source", "Solves", "Version" }, rows.items);
 }
 
+// ── verify (audit wiring, deps + published assets) ────────────────────────────
+
+/// Human label for an asset subtree in the verify report.
+fn subtreeLabel(sub: []const u8) []const u8 {
+    if (std.mem.eql(u8, sub, "resources")) return "resources (views)";
+    if (std.mem.eql(u8, sub, "database/migrations")) return "migrations";
+    if (std.mem.eql(u8, sub, "database/seeders")) return "seeders";
+    if (std.mem.eql(u8, sub, "database/factories")) return "factories";
+    return sub; // "config"
+}
+
+/// Audit every enabled plugin: is it resolvable on disk, are its `requires`
+/// dependencies also enabled, and were its shipped assets (config, migrations,
+/// seeders, factories, views) copied into the project + tracked in the manifest?
+/// Also checks the Support/helpers.php require. Reports per plugin; `--fix`
+/// delegates to `update` to publish anything missing and heal support requires.
+fn verifyPlugins(allocator: std.mem.Allocator, io: Io, env: *EnvMap, target: []const u8, fix: bool) !u8 {
+    const root = (try requireRoot(allocator, io, env, target)) orelse return 1;
+
+    const bootstrap = try std.fmt.allocPrint(allocator, "{s}/app/bootstrap/app.php", .{root});
+    const source = (try readBootstrap(allocator, io, bootstrap)) orelse return 1;
+
+    var aliases: std.ArrayList(boot.Alias) = .empty;
+    try boot.collectAliases(allocator, source, &aliases);
+    var enabled: std.ArrayList(Enabled) = .empty;
+    try boot.collectEnabled(allocator, source, aliases.items, &enabled);
+
+    const srcs = try sources.discoverSources(allocator, io, env, root);
+    const search = &[_]Source{ .project, .kernel };
+
+    // Enrich each enabled entry with its solves/source from the plugin on disk,
+    // so the requires-satisfaction check can match against enabled solves.
+    for (enabled.items) |*e| {
+        for (search) |src| {
+            const dir = srcs.dirFor(src) orelse continue;
+            if (try sources.readModuleMeta(allocator, io, dir, e.name)) |meta| {
+                e.solves = meta.solves;
+                e.version = meta.version;
+                e.resolved = true;
+                e.source = src;
+                break;
+            }
+        }
+    }
+
+    var cat: std.ArrayList(deps.Provider) = .empty;
+    try deps.catalogue(allocator, io, srcs, search, &cat);
+
+    prompt.intro("hkm plugins verify");
+    prompt.ok(try std.fmt.allocPrint(allocator, "project  {s}", .{root}));
+
+    if (enabled.items.len == 0) {
+        prompt.warn("No plugins enabled in this project.");
+        prompt.outro("Nothing to verify");
+        return 0;
+    }
+
+    var with_issues: usize = 0;
+    var total_issues: usize = 0;
+
+    for (enabled.items) |e| {
+        var issues: usize = 0;
+        const activation = if (e.activation == .essential) "essential" else "on-demand";
+        prompt.section(try std.fmt.allocPrint(allocator, "{s}  [{s}]", .{ e.name, activation }));
+
+        // Locate the plugin on disk (project shadows kernel).
+        var plugins_dir: ?[]const u8 = null;
+        var plugin_path: ?[]const u8 = null;
+        var src_label: []const u8 = "—";
+        for (search) |src| {
+            const d = srcs.dirFor(src) orelse continue;
+            const fp = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ d, e.name });
+            if (util.dirExists(Dir.cwd(), io, fp)) {
+                plugins_dir = d;
+                plugin_path = fp;
+                src_label = sources.sourceLabel(src);
+                break;
+            }
+        }
+
+        if (e.solves) |s| {
+            const ver = if (e.version) |v| try std.fmt.allocPrint(allocator, " · v{s}", .{v}) else "";
+            prompt.muted(try std.fmt.allocPrint(allocator, "    solves: {s}{s}", .{ s, ver }));
+        }
+        if (plugin_path) |pp| {
+            prompt.muted(try std.fmt.allocPrint(allocator, "    source: {s}  ({s})", .{ src_label, pp }));
+        } else {
+            prompt.err("    ✗ plugin folder not found on disk — cannot verify its assets");
+            issues += 1;
+        }
+
+        // 1. requires[] — each must be solved by another ENABLED plugin, be a
+        //    kernel port (no plugin provides it), else it is a real gap.
+        const meta = if (plugins_dir) |pd| try sources.readModuleMeta(allocator, io, pd, e.name) else null;
+        const requires = if (meta) |m| m.requires else &[_][]const u8{};
+        if (requires.len > 0) {
+            prompt.muted("    requires:");
+            for (requires) |req| {
+                if (enabledSolves(enabled.items, req)) |provider| {
+                    prompt.muted(try std.fmt.allocPrint(allocator, "        ✓ {s}  ({s})", .{ req, provider }));
+                } else if (deps.providerForDomain(cat.items, req)) |p| {
+                    prompt.err(try std.fmt.allocPrint(allocator, "        ✗ {s} — provided by {s}, NOT enabled", .{ req, p.located.name }));
+                    issues += 1;
+                } else {
+                    prompt.muted(try std.fmt.allocPrint(allocator, "        · {s}  (kernel port / external)", .{req}));
+                }
+            }
+        }
+
+        // 2. assets — compare what the plugin SHIPS with what exists in the
+        //    project and what the manifest tracks.
+        if (plugin_path) |pp| {
+            var shipped: std.ArrayList([]const u8) = .empty;
+            try assets.collectPublishable(allocator, io, pp, &shipped);
+            const tracked = (try assets.publishedPathsFor(allocator, io, root, e.name)) orelse &[_][]const u8{};
+
+            if (shipped.items.len == 0) {
+                prompt.muted("    assets: none shipped");
+            } else {
+                prompt.muted("    assets:");
+                var missing: std.ArrayList([]const u8) = .empty;
+                var untracked: usize = 0;
+                for (assets.subtrees) |sub| {
+                    const pfx = try std.fmt.allocPrint(allocator, "{s}/", .{sub});
+                    var total: usize = 0;
+                    var present: usize = 0;
+                    var trk: usize = 0;
+                    for (shipped.items) |p| {
+                        if (!std.mem.startsWith(u8, p, pfx)) continue;
+                        total += 1;
+                        const dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ root, p });
+                        if (util.fileExists(io, dest)) present += 1 else try missing.append(allocator, p);
+                        if (containsStr(tracked, p)) trk += 1 else untracked += 1;
+                    }
+                    if (total == 0) continue;
+                    const mark = if (present == total) "✓" else "✗";
+                    prompt.muted(try std.fmt.allocPrint(allocator, "        {s} {s}  {d}/{d} present · {d} tracked", .{ mark, subtreeLabel(sub), present, total, trk }));
+                }
+                if (missing.items.len > 0) {
+                    issues += 1;
+                    prompt.err(try std.fmt.allocPrint(allocator, "        {d} file(s) NOT copied into the project:", .{missing.items.len}));
+                    for (missing.items) |p| prompt.muted(try std.fmt.allocPrint(allocator, "            - {s}", .{p}));
+                }
+                if (untracked > 0)
+                    prompt.warn(try std.fmt.allocPrint(allocator, "        {d} shipped asset(s) not recorded in the manifest (enable/update to track)", .{untracked}));
+            }
+
+            // 3. Support/helpers.php require wiring.
+            const helpers = try std.fmt.allocPrint(allocator, "{s}/Support/helpers.php", .{pp});
+            if (util.fileExists(io, helpers)) {
+                const stag = try boot.supportTag(allocator, e.name);
+                if (std.mem.indexOf(u8, source, stag) != null) {
+                    prompt.muted("    ✓ Support/helpers.php require wired");
+                } else {
+                    prompt.err("    ✗ ships Support/helpers.php but its require is NOT wired in the bootstrap");
+                    issues += 1;
+                }
+            }
+        }
+
+        if (issues == 0) {
+            prompt.ok(try std.fmt.allocPrint(allocator, "    {s}: OK", .{e.name}));
+        } else {
+            with_issues += 1;
+            total_issues += issues;
+            prompt.warn(try std.fmt.allocPrint(allocator, "    {s}: {d} issue(s)", .{ e.name, issues }));
+        }
+    }
+
+    if (total_issues == 0) {
+        prompt.outro(try std.fmt.allocPrint(allocator, "All {d} enabled plugin(s) verified — no issues", .{enabled.items.len}));
+        return 0;
+    }
+
+    prompt.warn(try std.fmt.allocPrint(allocator, "{d} plugin(s) with {d} issue(s) total", .{ with_issues, total_issues }));
+
+    if (fix) {
+        prompt.section("Fixing — publishing missing assets + wiring Support requires");
+        _ = try updatePlugins(allocator, io, env, "", target, false);
+        prompt.note("Re-run `hkm plugins verify` to confirm; unmet requires need `hkm plugins enable <dep>`.");
+        return 0;
+    }
+
+    prompt.note("Fix with:  hkm plugins update   (or `hkm plugins verify --fix`)");
+    prompt.note("Unmet requires need:  hkm plugins enable <dependency>");
+    prompt.outro(try std.fmt.allocPrint(allocator, "{d} plugin(s) need attention", .{with_issues}));
+    return 1;
+}
+
+/// The name of the first ENABLED plugin whose solves domain equals `domain`.
+fn enabledSolves(items: []const Enabled, domain: []const u8) ?[]const u8 {
+    for (items) |e| {
+        if (e.solves) |s| {
+            if (std.mem.eql(u8, s, domain)) return e.name;
+        }
+    }
+    return null;
+}
+
 // ── enable / disable ──────────────────────────────────────────────────────────
 
 fn mutate(
@@ -398,6 +603,62 @@ fn enableWithDeps(
     return 0;
 }
 
+/// Escape a filesystem path for embedding in a PHP single-quoted string literal
+/// (only `\` and `'` are special inside single quotes).
+fn phpQuote(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (s) |c| {
+        if (c == '\\' or c == '\'') try out.append(allocator, '\\');
+        try out.append(allocator, c);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// If the plugin at `pluginPath` ships a `Support/helpers.php`, return the PHP
+/// `require_once` EXPRESSION (everything after `require_once `, incl. trailing
+/// `;`) that references it. The expression is made as portable as the plugin's
+/// location allows:
+///   • inside the project (incl. its `vendor/` composer packages)
+///       → `__DIR__ . '/../..<rel>'`      (relative to the bootstrap dir)
+///   • inside the kernel home (HKM_KERNEL_HOME / discovered kernel root)
+///       → `psp_kernel_home('<kroot>') . '<rel>'`  (resolves + guards at runtime)
+///   • anywhere else (a globally-installed package, an odd mount)
+///       → `'<abs>'`                       (absolute literal — last resort)
+/// `null` when the plugin ships no helpers file to wire.
+fn supportHelpersExpr(allocator: std.mem.Allocator, io: Io, env: *EnvMap, root: []const u8, pluginPath: []const u8) !?[]const u8 {
+    const helpers = util.trimSlash(try std.fmt.allocPrint(allocator, "{s}/Support/helpers.php", .{pluginPath}));
+    if (!util.fileExists(io, helpers)) return null;
+
+    // 1. Inside the project — bootstrap lives at <root>/app/bootstrap, so
+    //    `__DIR__ . '/../..'` is <root>. Covers project plugins AND anything under
+    //    the project's own vendor/ (composer packages resolve relative too).
+    const r = util.trimSlash(root);
+    if (util.isInside(helpers, r)) {
+        return try std.fmt.allocPrint(allocator, "__DIR__ . '{s}';", .{try phpQuote(allocator, try std.fmt.allocPrint(allocator, "/../..{s}", .{helpers[r.len..]}))});
+    }
+
+    // 2. Inside the kernel home — reference it through psp_kernel_home() (defined
+    //    in kernel-autoload.php), which resolves HKM_KERNEL_HOME at runtime so a
+    //    relocated kernel still works, falls back to the discovered dev-time path,
+    //    and — crucially — hard-fails with a clear "framework not installed
+    //    correctly" message instead of letting require_once fatal cryptically.
+    if (try sources.kernelPluginsDir(allocator, io, env, root)) |kdir| {
+        if (util.parentOf(kdir)) |kroot_raw| {
+            const kroot = util.trimSlash(kroot_raw);
+            if (util.isInside(helpers, kroot)) {
+                return try std.fmt.allocPrint(
+                    allocator,
+                    "psp_kernel_home('{s}') . '{s}';",
+                    .{ try phpQuote(allocator, kroot), try phpQuote(allocator, helpers[kroot.len..]) },
+                );
+            }
+        }
+    }
+
+    // 3. Last resort — an absolute literal (e.g. a global composer install).
+    return try std.fmt.allocPrint(allocator, "'{s}';", .{try phpQuote(allocator, helpers)});
+}
+
 /// Enable ONE plugin into `source`, returning the updated text (no file write).
 /// Publishes assets + runs migrations as a side effect (skipped on dry-run).
 fn enableOne(
@@ -423,10 +684,20 @@ fn enableOne(
     const meta = if (chosenDir) |cd| try sources.readModuleMeta(allocator, io, cd, folder) else null;
     const block = try boot.buildEntryBlock(allocator, folder, meta);
     const marker = if (essential) "withEssentialModules(" else "withModules(";
-    const updated = (try boot.insertIntoArray(allocator, source, marker, block)) orelse {
+    var updated = (try boot.insertIntoArray(allocator, source, marker, block)) orelse {
         prompt.err(try std.fmt.allocPrint(allocator, "Could not find ->{s}[...]) in the bootstrap to insert into.", .{marker[0 .. marker.len - 1]}));
         return null;
     };
+
+    // Wire the plugin's Support/helpers.php (global functions — not autoloaded)
+    // via a managed require_once in the bootstrap. Only when the plugin ships one.
+    const support_expr: ?[]const u8 = if (chosenDir) |cd|
+        try supportHelpersExpr(allocator, io, env, root, try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cd, folder }))
+    else
+        null;
+    if (support_expr) |expr| {
+        updated = try boot.insertSupportRequire(allocator, updated, folder, expr);
+    }
 
     const verb = if (dry_run) "Would enable" else "Enabled";
     const tag = if (dependency) "dependency · " else "";
@@ -435,6 +706,8 @@ fn enableOne(
     if (dry_run) {
         prompt.muted(try std.fmt.allocPrint(allocator, "    + into ->{s}[...]):", .{marker[0 .. marker.len - 1]}));
         printAddedLines(allocator, block);
+        if (support_expr) |expr|
+            prompt.muted(try std.fmt.allocPrint(allocator, "    + require_once {s}  (Support/helpers.php)", .{expr}));
         if (chosenDir) |cd| {
             const fp = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cd, folder });
             var preview: std.ArrayList([]const u8) = .empty;
@@ -452,6 +725,8 @@ fn enableOne(
         if (m.solves) |s| prompt.muted(try std.fmt.allocPrint(allocator, "    solves: {s}", .{s}));
         if (m.doc != null or m.description != null) prompt.muted("    documentation comment added above the entry");
     }
+    if (support_expr) |expr|
+        prompt.muted(try std.fmt.allocPrint(allocator, "    wired Support/helpers.php  (require_once {s})", .{expr}));
 
     if (chosenDir) |cd| {
         const fp = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cd, folder });
@@ -576,17 +851,24 @@ fn disableOne(
 ) !?[]const u8 {
     const result = try boot.removeFromArray(allocator, source, token, aliases);
 
+    // Also drop the managed require_once for the plugin's Support/helpers.php.
+    const support = try boot.removeSupportRequire(allocator, result.text, folder);
+
     const verb = if (dry_run) "Would disable" else "Disabled";
     prompt.ok(try std.fmt.allocPrint(allocator, "{s} {s}", .{ verb, folder }));
 
     const published = try assets.publishedPathsFor(allocator, io, root, folder);
 
     if (dry_run) {
-        prompt.muted(try std.fmt.allocPrint(allocator, "    - {d} line(s) removed:", .{result.removed.len}));
+        prompt.muted(try std.fmt.allocPrint(allocator, "    - {d} line(s) removed:", .{result.removed.len + support.removed.len}));
         printRemovedLines(allocator, result.removed);
+        printRemovedLines(allocator, support.removed);
         if (published) |p| prompt.muted(try std.fmt.allocPrint(allocator, "    would offer to unpublish {d} asset(s) + roll back migrations", .{p.len}));
-        return result.text;
+        return support.text;
     }
+
+    if (support.removed.len > 0)
+        prompt.muted("    unwired Support/helpers.php require");
 
     if (published) |p| {
         const label = try std.fmt.allocPrint(allocator, "Unpublish {s}'s {d} asset(s) and roll back its migrations?", .{ folder, p.len });
@@ -597,7 +879,7 @@ fn disableOne(
             prompt.muted("    left published assets in place (DB untouched).");
         }
     }
-    return result.text;
+    return support.text;
 }
 
 // ── update (re-publish new assets + migrate) ───────────────────────────────────
@@ -642,6 +924,12 @@ fn updatePlugins(
     var new_total: usize = 0;
     var matched = false;
 
+    // Heal the Support-helpers require for enabled plugins that gained (or always
+    // had) a Support/helpers.php but were never wired. Threaded through the loop so
+    // the bootstrap is written once at the end only if something changed.
+    var bootstrap_src = source;
+    var wired: usize = 0;
+
     for (enabled.items) |e| {
         if (only.len > 0 and !std.mem.eql(u8, e.name, only)) continue;
         matched = true;
@@ -660,6 +948,19 @@ fn updatePlugins(
             prompt.muted(try std.fmt.allocPrint(allocator, "{s}: not found in any plugins source — skipped.", .{e.name}));
             continue;
         };
+
+        // Wire a missing Support/helpers.php require (idempotent — a no-op when the
+        // plugin ships none or the require is already present).
+        if (try supportHelpersExpr(allocator, io, env, root, fp)) |expr| {
+            const woven = try boot.insertSupportRequire(allocator, bootstrap_src, e.name, expr);
+            if (woven.ptr != bootstrap_src.ptr) {
+                bootstrap_src = woven;
+                wired += 1;
+                const verb = if (dry_run) "Would wire" else "Wired";
+                prompt.ok(try std.fmt.allocPrint(allocator, "{s} Support/helpers.php for {s}", .{ verb, e.name }));
+                prompt.muted(try std.fmt.allocPrint(allocator, "    + require_once {s}", .{expr}));
+            }
+        }
 
         // Detect (and, unless dry-run, copy) only assets not already published.
         var new_paths: std.ArrayList([]const u8) = .empty;
@@ -703,10 +1004,11 @@ fn updatePlugins(
     }
 
     if (dry_run) {
-        prompt.outro(try std.fmt.allocPrint(allocator, "Dry run — {d} plugin(s) with {d} new asset(s)", .{ touched, new_total }));
+        prompt.outro(try std.fmt.allocPrint(allocator, "Dry run — {d} plugin(s) with {d} new asset(s) · {d} Support require(s) to wire", .{ touched, new_total, wired }));
         return 0;
     }
-    prompt.outro(try std.fmt.allocPrint(allocator, "Updated {d} plugin(s) · {d} new asset(s) published", .{ touched, new_total }));
+    if (wired > 0) try Dir.cwd().writeFile(io, .{ .sub_path = bootstrap, .data = bootstrap_src });
+    prompt.outro(try std.fmt.allocPrint(allocator, "Updated {d} plugin(s) · {d} new asset(s) published · {d} Support require(s) wired", .{ touched, new_total, wired }));
     return 0;
 }
 
@@ -1024,9 +1326,10 @@ fn printHelp() void {
     prompt.intro("hkm plugins");
     prompt.section("Usage");
     prompt.item("hkm plugins [path|name]", "show the plugins/modules a project enables");
+    prompt.item("hkm plugins verify [proj]", "audit enabled plugins: wiring, deps + copied assets/views/migrations/configs");
     prompt.item("hkm plugins enable <plugin> [proj]", "wire a plugin into the project bootstrap");
     prompt.item("hkm plugins disable <plugin> [proj]", "remove a plugin from the project bootstrap");
-    prompt.item("hkm plugins update [plugin] [proj]", "publish NEW assets of enabled plugin(s) + migrate them");
+    prompt.item("hkm plugins update [plugin] [proj]", "publish NEW assets of enabled plugin(s) + migrate them; wire any missing Support/helpers.php require");
     prompt.item("hkm plugins create <name> [proj]", "scaffold a new plugin (project, or --kernel)");
     prompt.item("hkm plugins delete <name> [proj]", "delete a plugin folder from disk");
     prompt.item("hkm plugins make:migration <plugin> <name>", "add a migration INTO a plugin (not published)");
@@ -1037,6 +1340,7 @@ fn printHelp() void {
     prompt.item("--essential, -e", "enable into withEssentialModules() (default: on-demand)");
     prompt.item("--kernel, -k", "create/delete a KERNEL plugin (kernel monorepo only)");
     prompt.item("--dry-run, -n", "preview the change without writing");
+    prompt.item("--fix, -f", "verify: publish missing assets + wire Support requires");
     prompt.item("--help, -h", "show this help");
     prompt.blank();
     prompt.section("Sources");
@@ -1048,6 +1352,7 @@ fn printHelp() void {
     prompt.item("enable", "resolves requires[] deps (e.g. Tenancy → Database/Auth/User), publishes assets + migrate:run");
     prompt.item("disable", "won't orphan dependents (offers to cascade); offers to prune now-unused deps, keeping shared ones");
     prompt.item("create", "scaffolds a complete plugin (config, migration, seeder, factory, view)");
+    prompt.item("Support helpers", "a plugin's Support/helpers.php is require_once'd in the bootstrap on enable, removed on disable");
     prompt.item("aliases", "enable=add/on · disable=remove/off · create=new/make · delete=del/rm");
     prompt.blank();
     prompt.section("Resolution");

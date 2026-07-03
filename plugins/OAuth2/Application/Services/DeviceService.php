@@ -54,7 +54,7 @@ final class DeviceService
         $userCode      = $this->generateUserCode();
         $expires       = (new \DateTimeImmutable())->add(new \DateInterval('PT' . max(60, $this->ttl) . 'S'));
 
-        $device = new DeviceCode(
+        $device = DeviceCode::of(
             id:           bin2hex(random_bytes(16)),
             userCode:     $userCode,
             clientId:     $client->id,

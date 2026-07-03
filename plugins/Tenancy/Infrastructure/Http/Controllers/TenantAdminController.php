@@ -54,9 +54,9 @@ final class TenantAdminController extends ApiController
     /** POST /ajx/admin/tenants — provision a new tenant. */
     public function store(): Response
     {
-        // if (($guard = $this->guard()) !== null) {
-        //     return $guard;
-        // }
+        if (($guard = $this->guard()) !== null) {
+            return $guard;
+        }
 
         try {
             $tenant = $this->tenants->create($this->payload());

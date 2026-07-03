@@ -14,7 +14,7 @@ use Plugins\Tenancy\Domain\Entities\AuditEntry;
  *
  * Access rule: DatabasePort ONLY (the CENTRAL connection — the trail lives in
  * the control-plane DB, never a tenant DB). Writes go through
- * {@see \Plugins\Tenancy\Infrastructure\Audit\AuditTrail}; this is the read
+ * {@see AuditTrail}; this is the read
  * counterpart, leaning on the (tenant_id|user_id|action, occurred_at) indexes.
  *
  * Listings are keyset-paginated by descending id (monotonic with occurred_at):

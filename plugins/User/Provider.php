@@ -21,12 +21,18 @@ use Plugins\User\Infrastructure\Gateways\PwnedPasswordGateway;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
 use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
 use Plugins\User\API\Contracts\UserServiceContract;
+use Plugins\User\Application\Services\FeedbackService;
 use Plugins\User\Application\Services\UserService;
+use Plugins\User\Application\Services\UserSettingsService;
 use Plugins\User\Infrastructure\Audit\AuditLogger;
 use Plugins\User\Infrastructure\Cli\RelayUserOutboxCommand;
+use Plugins\User\Infrastructure\Http\Controllers\FeedbackController;
 use Plugins\User\Infrastructure\Http\Controllers\UserPageController;
+use Plugins\User\Infrastructure\Http\Controllers\UserSettingsController;
 use Plugins\User\Infrastructure\Outbox\OutboxWriter;
+use Plugins\User\Infrastructure\Persistence\FeedbackRepository;
 use Plugins\User\Infrastructure\Persistence\UserRepository;
+use Plugins\User\Infrastructure\Persistence\UserSettingsRepository;
 use Plugins\View\API\Contracts\ViewRendererContract;
 
 /**
@@ -64,7 +70,13 @@ final class Provider implements ModuleContract
     /** @return list<class-string> */
     public function exposes(): array
     {
-        return [UserServiceContract::class];
+        // Only UserServiceContract is consumed cross-module (Auth/Tenancy).
+        // Feedback + settings are internal to this plugin (their own
+        // controllers), so they are NOT published — the controllers depend on
+        // the concrete services directly.
+        return [
+            UserServiceContract::class,
+        ];
     }
 
     public function register(ModuleContainer $container): void
@@ -126,6 +138,40 @@ final class Provider implements ModuleContract
             new UserPageController(
                 $c->make(ViewRendererContract::class),
             ));
+
+        // ── Feedback (TENANT-scoped, internal) ───────────────────────────────
+        // Feedback lives in the request's TENANT database, so the repository
+        // takes the tenant-routed DatabasePort directly (NOT self::central()).
+        // The service is internal — its own controller depends on it directly.
+        $container->bindInternal(FeedbackRepository::class, static fn(ModuleContainer $c) =>
+            new FeedbackRepository($c->make(DatabasePort::class)));
+
+        $container->bindInternal(FeedbackService::class, static fn(ModuleContainer $c) =>
+            new FeedbackService(
+                repository: $c->make(FeedbackRepository::class),
+                eventBus:   $c->make(EventBus::class),
+                identity:   $c->make(Identity::class),
+                audit:      $c->make(AuditLogger::class),
+            ));
+
+        $container->bindInternal(FeedbackController::class, static fn(ModuleContainer $c) =>
+            new FeedbackController($c->make(FeedbackService::class)));
+
+        // ── Per-user settings (TENANT-scoped singletons, internal) ───────────
+        // One service + one repository for all four settings resources. Scoped
+        // to the authenticated Identity (self only); tenant-routed DatabasePort.
+        $container->bindInternal(UserSettingsRepository::class, static fn(ModuleContainer $c) =>
+            new UserSettingsRepository($c->make(DatabasePort::class)));
+
+        $container->bindInternal(UserSettingsService::class, static fn(ModuleContainer $c) =>
+            new UserSettingsService(
+                $c->make(UserSettingsRepository::class),
+                $c->make(Identity::class),
+                $c->make(AuditLogger::class),
+            ));
+
+        $container->bindInternal(UserSettingsController::class, static fn(ModuleContainer $c) =>
+            new UserSettingsController($c->make(UserSettingsService::class)));
     }
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void

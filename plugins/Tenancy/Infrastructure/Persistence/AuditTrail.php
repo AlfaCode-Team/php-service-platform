@@ -2,26 +2,32 @@
 
 declare(strict_types=1);
 
-namespace Plugins\Tenancy\Infrastructure\Audit;
+namespace Plugins\Tenancy\Infrastructure\Persistence;
 
+use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\RepositoryException;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
-use Plugins\Tenancy\Application\Ports\AuditSink;
+use Plugins\Tenancy\Application\Ports\AuditWriter;
+use Plugins\Tenancy\Support\Token;
 
 /**
  * AuditTrail — append-only writer for the central `audit_log` table.
  *
  * Access rule: DatabasePort ONLY (central connection). Records identifiers +
- * structured meta only — never passwords/tokens/PII payloads. An audit write
- * must never break the action it records, so failures are swallowed (the trail
- * is best-effort; the security-critical path is the membership check, not the log).
+ * structured meta only — never passwords/tokens/PII payloads. Write half of the
+ * table; the read/query half is {@see AuditLogRepository}.
+ *
+ * Pure persistence: a failure is translated to RepositoryException (like the
+ * read sibling) and rethrown. The best-effort policy — never letting an audit
+ * write break the action it records — lives one layer up in
+ * {@see \Plugins\Tenancy\Application\Services\AuditService}.
  */
-final class AuditTrail implements AuditSink
+final class AuditTrail implements AuditWriter
 {
     public function __construct(
         private readonly DatabasePort $central,
     ) {}
 
-    public function record(
+    public function write(
         string $action,
         ?string $userId = null,
         ?string $tenantId = null,
@@ -33,7 +39,7 @@ final class AuditTrail implements AuditSink
                 'INSERT INTO audit_log (event_id, user_id, tenant_id, action, ip, meta, occurred_at)
                  VALUES (:eid, :uid, :tid, :action, :ip, :meta, :ts)',
                 [
-                    'eid'    => self::ulid(),
+                    'eid'    => Token::ulid(),
                     'uid'    => $userId,
                     'tid'    => $tenantId,
                     'action' => $action,
@@ -42,25 +48,13 @@ final class AuditTrail implements AuditSink
                     'ts'     => (new \DateTimeImmutable())->format('Y-m-d H:i:s'),
                 ],
             );
-        } catch (\Throwable) {
-            // Best-effort: never let an audit write fail the action it records.
+        } catch (\Throwable $e) {
+            throw new RepositoryException(
+                'Failed to write audit entry.',
+                layer: 'repository.tenancy',
+                context: ['action' => $action],
+                previous: $e,
+            );
         }
-    }
-
-    private static function ulid(): string
-    {
-        $alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-        $ms = (int) (microtime(true) * 1000);
-        $time = '';
-        for ($i = 0; $i < 10; $i++) {
-            $time = $alphabet[$ms % 32] . $time;
-            $ms = intdiv($ms, 32);
-        }
-        $rand = '';
-        for ($i = 0; $i < 16; $i++) {
-            $rand .= $alphabet[random_int(0, 31)];
-        }
-
-        return $time . $rand;
     }
 }

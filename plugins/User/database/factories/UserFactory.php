@@ -23,7 +23,8 @@ return EntityFactory::for('users')
             'username'      => 'user' . ($i + 1),
             'email'         => $f->uniqueEmail($i),
             'password_hash' => $hasher->make('password'),
-            'status'        => 1, // 1=active,2=inactive,3=pending
+            // Verified email = the login gate; set it so factory users can log in.
+            'email_verified_at' => $now,
             'created_at'    => $now,
             'updated_at'    => $now,
         ];

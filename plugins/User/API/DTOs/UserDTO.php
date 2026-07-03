@@ -16,7 +16,6 @@ final readonly class UserDTO
         public string $id,
         public string $username,
         public string $email,
-        public string $status,
         public bool $emailVerified,
         public string $createdAt,
     ) {}
@@ -24,10 +23,9 @@ final readonly class UserDTO
     public static function fromEntity(User $user): self
     {
         return new self(
-            id:            $user->id()->value(),
-            username:      $user->username()->value(),
-            email:         $user->email()->value(),
-            status:        $user->status()->label(),
+            id:            $user->id(),
+            username:      $user->username(),
+            email:         $user->email(),
             emailVerified: $user->isEmailVerified(),
             createdAt:     $user->createdAt()->format(\DateTimeInterface::RFC3339),
         );
@@ -40,7 +38,6 @@ final readonly class UserDTO
             'id'            => $this->id,
             'username'      => $this->username,
             'email'         => $this->email,
-            'status'        => $this->status,
             'emailVerified' => $this->emailVerified,
             'createdAt'     => $this->createdAt,
         ];
