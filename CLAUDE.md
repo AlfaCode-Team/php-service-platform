@@ -1917,6 +1917,76 @@ Local application-specific modules live in `plugins/`, NOT `projects/`.
 
 ---
 
+## ENTITY, CASTING & HYDRATION SUPPORT (Project layer — `Project\Support\`)
+
+Reusable, **DI-free** entity-mapping helpers under `projects/Support/`. They are
+the GDA-compliant decomposition of the legacy CodeIgniter/Eloquent-style
+`__DEV__/Entity` Active Record: the fat AR base was split across the layers it
+conflated, and only the genuinely reusable casting/mapping/entity-mechanics live
+here. They perform **no I/O, read no globals, and import nothing outside their
+own namespace** — safe to use from a plugin's `Domain/`, `Application/` or
+`Infrastructure/` layer.
+
+| Namespace | Class(es) | Role |
+|---|---|---|
+| `Project\Support\Casting` | `DataCaster` | Cast ONE field value, either direction (`get`=DB→PHP, `set`=PHP→DB) |
+| `Project\Support\Casting` | `TypeParser` | Parse a type string → `{nullable, baseType, params}` |
+| `Project\Support\Casting` | `CastInterface` / `BaseCast` | Cast contract + identity base |
+| `Project\Support\Casting` | `CastException` | Invalid handler / JSON |
+| `Project\Support\Casting\Casts` | 11 built-ins | `int integer float double string bool boolean int-bool csv array json object datetime timestamp` |
+| `Project\Support\Hydration` | `DataConverter` | Map a whole DB row ⇄ object (uses `DataCaster`) — the Repository's hydrator |
+| `Project\Support\Entity` | `Entity` (abstract) | Enterprise base class for domain entities |
+
+### Type-cast grammar
+
+`?`-prefix = nullable; `base[param,param]` = handler + params. E.g. `?json[array]`
+(nullable JSON decoded as assoc array), `datetime[ms]`, `int-bool`. `bool` only
+casts on READ — use `int-bool` when the column stores `0/1` and the WRITE must
+emit an int. Register custom casts via the `castHandlers` arg or the entity's
+`$customCasters` (must implement `CastInterface`).
+
+### `Entity` base (`Project\Support\Entity\Entity`)
+
+Implements `JsonSerializable`, `ArrayAccess`, `Stringable`. Feature set, all
+infrastructure-free:
+
+- **Attribute bag + bidirectional casting** via `$casts` + `DataCaster`.
+- **Mass-assignment guard — secure by default** (`$guarded = ['*']`): `fill()`
+  only writes `$fillable` keys (defense-in-depth; the DTO at the edge is still
+  the primary validator). `forceFill()` bypasses for trusted data.
+- **Visibility:** `$hidden` / `$visible`, runtime `makeHidden()/makeVisible()`.
+- **Secret redaction:** `__debugInfo()` masks `$hidden` as `********` so secrets
+  never leak into `var_dump()`/logs/traces.
+- **Computed `$appends`**, date-aware serialization (`$dates`/`$dateFormat`).
+- **Typed null-safe getters:** `getString/getInt/getFloat/getBool/getArray/getDate`.
+- **Change tracking:** `isDirty/isClean/wasChanged/getDirty/getChanges/getOriginal/syncOriginal`.
+- **Domain-event buffer:** `recordEvent()` (protected) + `releaseEvents()` — the
+  Service flushes them inside the tx; the entity NEVER dispatches.
+- **Immutability:** `seal()` → any mutation throws `LogicException` (read-only snapshots).
+- **Hydrator seam:** `static reconstitute(array)` (records NO events) + `toRawArray()`.
+- **Identity/lifecycle:** `getKey/getKeyName/exists/is/isNot`, `make()`, `replicate()` (drops PK), `__clone` resets tracking.
+
+### What this is NOT — it stays GDA-compliant
+
+```
+✗ NO save()/delete()/find()/getRepo_() on the entity — persistence is the Repository's job (DatabasePort)
+✗ NO meta tables, NO app()/kernel()/config() globals, NO magic __get DB fallback
+✗ NOT an ORM — the entity never queries; a Repository hydrates it via DataConverter::reconstruct()
+✓ Repository: Entity::reconstitute($row) (or DataConverter::reconstruct) ; $db->upsert($table, $entity->toRawArray(onlyChanged:true), ['id'])
+✓ Casts are STATIC + STATELESS (OpenSwoole-safe); DataConverter pools casters by types-hash
+✓ Prefer ?type over strict:false for nullable columns ; reconstruct() has no reflection back-door (needs a static factory/closure)
+```
+
+The strict GDA gold standard is still a `final` entity with a private constructor
+and fully-encapsulated typed state. Extend `Project\Support\Entity\Entity` only
+when a flexible, meta-driven attribute bag genuinely earns its keep; prefer a
+hand-written `final` entity for small, well-defined aggregates.
+
+Full guides: `projects/Support/Casting/README.md` and
+`projects/Support/Entity/README.md`.
+
+---
+
 ## SEO, SITEMAPS & INDEXING (plugin + Project-layer support)
 
 The **SiteSEO** plugin (`Plugins\SiteSEO\`, solves `seo.management`, on-demand,
@@ -2041,3 +2111,6 @@ For deeper context on any layer, reference:
 - `@docs/ai-context/24_USER.md`                — User plugin: central identity, UserServiceContract, transactional outbox, audit_log persistence, tenant-origin on user.registered
 - `@docs/ai-context/25_AUTH.md`                — Auth plugin: JWT/PAT/session issuance + verification, JwtAuthLayer (iss/aud/leeway, jti revocation), asymmetric signing, SessionAuthStage, /auth routes
 - `@docs/ai-context/26_OAUTH2.md`              — OAuth2 plugin: OAuth 2.1 + OIDC authorization server (grants, PKCE, device code, JWKS, introspection/revocation, scope namespacing, apex-host placement)
+- `@docs/ai-context/27_ENTITY_SUPPORT.md`      — Project\Support: DataCaster casting engine, TypeParser grammar, built-in + custom casts, DataConverter hydrator, the enterprise Entity base (GDA-safe decomposition of the legacy Active Record)
+- `@projects/Support/Casting/README.md`        — full casting + hydration cookbook
+- `@projects/Support/Entity/README.md`         — full Entity base reference + 18-part cookbook

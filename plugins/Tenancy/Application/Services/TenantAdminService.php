@@ -4,67 +4,68 @@ declare(strict_types=1);
 
 namespace Plugins\Tenancy\Application\Services;
 
-use AlfaCode\LetMigrate\MigrationServiceFactory;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\SecurityException;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\ServiceException;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\ValidationException;
-use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\EncryptionPort;
-use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
 use Plugins\Tenancy\API\Contracts\TenantAdminServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantRegistryContract;
 use Plugins\Tenancy\API\DTOs\TenantDetail;
+use Plugins\Tenancy\Application\Ports\TenantProvisioner;
+use Plugins\Tenancy\Application\Ports\TenantWriteStore;
 use Plugins\Tenancy\Domain\Entities\Tenant;
 use Plugins\Tenancy\Domain\ValueObjects\TenantStatus;
-use Plugins\Tenancy\Infrastructure\Cli\Concerns\ManagesTenantDatabase;
 use Plugins\Tenancy\Support\Token;
 
 /**
  * TenantAdminService — control-plane CRUD over the central `tenants` registry.
  *
- * The HTTP-facing twin of the tenant:create / tenant:delete CLI commands. All
- * reads/writes hit the CENTRAL connection (ConnectionManager default) — a
- * tenant DB is never touched here except to run its own template migrations.
- *
- * Identifiers are validated before they are ever concatenated into DDL; the
- * tenant DB password is stored ENCRYPTED and never read back out.
+ * Pure orchestration: it validates input, then drives the persistence boundary
+ * ({@see TenantWriteStore}) and the data-plane boundary ({@see TenantProvisioner}).
+ * It holds no connection, writes no SQL and runs no DDL — those live behind the
+ * ports, honouring the GDA rule "Service → Repository/Gateway; Repository →
+ * DatabasePort only".
  */
 final class TenantAdminService implements TenantAdminServiceContract
 {
-    use ManagesTenantDatabase;
-
     private const DRIVERS = ['mysql', 'pgsql', 'sqlsrv'];
 
+    /** Permission (or role) a caller must hold to manage the tenant fleet. */
+    private const ADMIN_PERMISSION = 'tenancy:admin';
+    private const ADMIN_ROLE       = 'platform-admin';
+
     public function __construct(
-        private readonly DatabaseConnectionManagerContract $connections,
-        private readonly EncryptionPort $crypto,
+        private readonly TenantWriteStore $store,
+        private readonly TenantProvisioner $provisioner,
         private readonly TenantRegistryContract $registry,
-        private readonly ?string $templatePath = null,
+        private readonly EncryptionPort $crypto,
+        private readonly Identity $identity,
     ) {}
 
     public function list(): array
     {
-        $rows = $this->central()->query(
-            'SELECT * FROM tenants ORDER BY status ASC, name ASC'
-        );
+        $this->requireAdmin();
 
         return array_map(
-            static fn (array $row): TenantDetail => TenantDetail::fromEntity(Tenant::fromRow($row)),
-            $rows,
+            static fn (Tenant $t): TenantDetail => TenantDetail::fromEntity($t),
+            $this->store->all(),
         );
     }
 
     public function get(string $tenantId): ?TenantDetail
     {
-        $row = $this->central()->queryOne(
-            'SELECT * FROM tenants WHERE tenant_id = :id',
-            ['id' => $tenantId],
-        );
+        $this->requireAdmin();
 
-        return $row === null ? null : TenantDetail::fromEntity(Tenant::fromRow($row));
+        $tenant = $this->store->find($tenantId);
+
+        return $tenant === null ? null : TenantDetail::fromEntity($tenant);
     }
 
     public function create(array $input): TenantDetail
     {
+        $this->requireAdmin();
+
         $name   = trim((string) ($input['name'] ?? ''));
         $slug   = strtolower(trim((string) ($input['slug'] ?? '')));
         $driver = strtolower(trim((string) ($input['driver'] ?? 'mysql')));
@@ -96,68 +97,38 @@ final class TenantAdminService implements TenantAdminServiceContract
         if ($errors !== []) {
             throw new ValidationException($errors);
         }
-
-        $central = $this->central();
-        if ($central->queryOne('SELECT 1 AS p FROM tenants WHERE slug = :s', ['s' => $slug]) !== null) {
+        if ($this->store->slugExists($slug)) {
             throw new ValidationException(['slug' => 'A tenant with this slug already exists.']);
         }
 
-        $tenantId     = Token::ulid();
-        $dbPreExisted = $this->databaseExists($central, $driver, $dbName);
-        $dbCreated    = false;
-        $userCreated  = false;
+        // Provisioning entity — password stored ENCRYPTED, status=provisioning.
+        $tenant = Tenant::create(
+            tenantId:      Token::ulid(),
+            name:          $name,
+            slug:          $slug,
+            dbDriver:      $driver,
+            dbHost:        $dbHost,
+            dbPort:        $dbPort,
+            dbName:        $dbName,
+            dbUsername:    $dbUser,
+            dbPasswordEnc: $this->crypto->encryptString($dbPass),
+            status:        TenantStatus::Provisioning,
+            schemaVersion: 0,
+        );
+
+        $dbPreExisted = $this->provisioner->databaseExists($tenant);
 
         try {
-            // 1. Registry row (provisioning), password encrypted.
-            $central->execute(
-                'INSERT INTO tenants
-                    (tenant_id, name, slug, db_driver, db_host, db_port, db_name,
-                     db_username, db_password_enc, status, schema_version)
-                 VALUES (:id, :name, :slug, :driver, :host, :port, :db, :user, :pass, :status, 0)',
-                [
-                    'id' => $tenantId, 'name' => $name, 'slug' => $slug,
-                    'driver' => $driver, 'host' => $dbHost, 'port' => $dbPort,
-                    'db' => $dbName, 'user' => $dbUser,
-                    'pass' => $this->crypto->encryptString($dbPass),
-                    'status' => TenantStatus::Provisioning->value,
-                ],
-            );
-
-            // 2. Create the isolated database (idempotent, driver-aware).
-            if (!$dbPreExisted) {
-                match ($driver) {
-                    'pgsql'  => $central->execute("CREATE DATABASE \"{$dbName}\""),
-                    'sqlsrv' => $central->execute("IF DB_ID('{$dbName}') IS NULL CREATE DATABASE [{$dbName}]"),
-                    default  => $central->execute("CREATE DATABASE IF NOT EXISTS `{$dbName}`"),
-                };
-                $dbCreated = true;
-            }
-
-            // 2b. Create the tenant DB user, granted on its database only.
-            $this->provisionUser($central, $driver, $dbName, $dbUser, $dbPass, $dbHost);
-            $userCreated = true;
-
-            // 3. Run the tenant template migrations against the new database.
-            $service = MigrationServiceFactory::fromConfig([
-                'driver'        => $driver,
-                'host'          => $dbHost,
-                'port'          => $dbPort,
-                'database'      => $dbName,
-                'username'      => $dbUser,
-                'password'      => $dbPass,
-                'paths'         => [$this->resolveTemplatePath()],
-                'transactional' => true,
-            ]);
-            $service->install();
-            $service->run();
-
-            // 4. Activate.
-            $central->execute(
-                'UPDATE tenants SET status = :s, schema_version = :v WHERE tenant_id = :id',
-                ['s' => TenantStatus::Active->value, 'v' => 1, 'id' => $tenantId],
-            );
+            $this->store->insert($tenant);
+            $this->provisioner->provision($tenant, $dbPass, $dbPreExisted);
+            $this->store->markActive($tenant->tenantId, schemaVersion: 1);
         } catch (\Throwable $e) {
-            $this->rollbackProvisioning($central, $driver, $dbName, $dbUser, $dbHost, $tenantId, $dbCreated, $userCreated);
+            // Compensate: undo infra we created, then the registry row.
+            $this->provisioner->teardown($tenant, dropDatabase: !$dbPreExisted);
+            try {
+                $this->store->delete($tenant->tenantId);
+            } catch (\Throwable) {
+            }
 
             throw new ServiceException(
                 'tenancy.create.failed',
@@ -167,9 +138,9 @@ final class TenantAdminService implements TenantAdminServiceContract
             );
         }
 
-        $this->registry->forget($tenantId);
+        $this->registry->forget($tenant->tenantId);
 
-        return $this->get($tenantId) ?? throw new ServiceException(
+        return $this->get($tenant->tenantId) ?? throw new ServiceException(
             'tenancy.create.missing_after_commit',
             layer: 'service.tenancy.admin',
         );
@@ -177,104 +148,67 @@ final class TenantAdminService implements TenantAdminServiceContract
 
     public function update(string $tenantId, array $input): TenantDetail
     {
-        $central = $this->central();
-        if ($central->queryOne('SELECT 1 AS p FROM tenants WHERE tenant_id = :id', ['id' => $tenantId]) === null) {
+        $this->requireAdmin();
+
+        if ($this->store->find($tenantId) === null) {
             throw new ServiceException('tenancy.not_found', layer: 'service.tenancy.admin', context: ['id' => $tenantId]);
         }
 
-        $sets   = [];
-        $params = ['id' => $tenantId];
+        $name   = null;
+        $slug   = null;
+        $status = null;
         $errors = [];
 
         if (array_key_exists('name', $input)) {
-            $name = trim((string) $input['name']);
-            if ($name === '') {
+            $candidate = trim((string) $input['name']);
+            if ($candidate === '') {
                 $errors['name'] = 'A name is required.';
             } else {
-                $sets[] = 'name = :name';
-                $params['name'] = $name;
+                $name = $candidate;
             }
         }
 
         if (array_key_exists('slug', $input)) {
-            $slug = strtolower(trim((string) $input['slug']));
-            if (!preg_match('/^[a-z0-9-]+$/', $slug)) {
+            $candidate = strtolower(trim((string) $input['slug']));
+            if (!preg_match('/^[a-z0-9-]+$/', $candidate)) {
                 $errors['slug'] = 'Use ^[a-z0-9-]+$ only.';
+            } elseif ($this->store->slugExists($candidate, exceptId: $tenantId)) {
+                $errors['slug'] = 'Another tenant already uses this slug.';
             } else {
-                $clash = $central->queryOne(
-                    'SELECT 1 AS p FROM tenants WHERE slug = :s AND tenant_id <> :id',
-                    ['s' => $slug, 'id' => $tenantId],
-                );
-                if ($clash !== null) {
-                    $errors['slug'] = 'Another tenant already uses this slug.';
-                } else {
-                    $sets[] = 'slug = :slug';
-                    $params['slug'] = $slug;
-                }
+                $slug = $candidate;
             }
         }
 
         if (array_key_exists('status', $input)) {
-            $status = $this->statusFromName((string) $input['status']);
-            if ($status === null) {
+            $resolved = $this->statusFromName((string) $input['status']);
+            if ($resolved === null) {
                 $errors['status'] = 'Unknown status.';
             } else {
-                $sets[] = 'status = :status';
-                $params['status'] = $status->value;
+                $status = $resolved->value;
             }
         }
 
         if ($errors !== []) {
             throw new ValidationException($errors);
         }
-        if ($sets === []) {
-            return $this->get($tenantId);
-        }
 
-        try {
-            $central->execute(
-                'UPDATE tenants SET ' . implode(', ', $sets) . ' WHERE tenant_id = :id',
-                $params,
-            );
-        } catch (\Throwable $e) {
-            throw new ServiceException('tenancy.update.failed', layer: 'service.tenancy.admin', previous: $e);
-        }
-
+        $this->store->updateMeta($tenantId, $name, $slug, $status);
         $this->registry->forget($tenantId);
 
-        return $this->get($tenantId);
+        return $this->get($tenantId) ?? throw new ServiceException('tenancy.not_found', layer: 'service.tenancy.admin', context: ['id' => $tenantId]);
     }
 
     public function delete(string $tenantId, bool $dropDatabase = false): void
     {
-        $central = $this->central();
-        $row     = $central->queryOne('SELECT * FROM tenants WHERE tenant_id = :id', ['id' => $tenantId]);
-        if ($row === null) {
+        $this->requireAdmin();
+
+        $tenant = $this->store->find($tenantId);
+        if ($tenant === null) {
             throw new ServiceException('tenancy.not_found', layer: 'service.tenancy.admin', context: ['id' => $tenantId]);
         }
-        $tenant = Tenant::fromRow($row);
 
-        $failed = 0;
-        try {
-            $this->dropDatabaseUser($central, $tenant->dbDriver, $tenant->dbUsername, $tenant->dbHost);
-        } catch (\Throwable) {
-            $failed++;
-        }
-
-        if ($dropDatabase) {
-            try {
-                $this->dropDatabase($central, $tenant->dbDriver, $tenant->dbName);
-            } catch (\Throwable) {
-                $failed++;
-            }
-        }
-
-        try {
-            $central->execute('DELETE FROM tenants WHERE tenant_id = :id', ['id' => $tenantId]);
-        } catch (\Throwable $e) {
-            throw new ServiceException('tenancy.delete.failed', layer: 'service.tenancy.admin', previous: $e);
-        }
-
+        $failed = $this->provisioner->teardown($tenant, dropDatabase: $dropDatabase);
+        $this->store->delete($tenantId);
         $this->registry->forget($tenantId);
 
         if ($failed > 0) {
@@ -287,84 +221,21 @@ final class TenantAdminService implements TenantAdminServiceContract
     }
 
     /**
-     * Create the tenant DB user (idempotent) and grant it full privileges on
-     * its own database only. The password cannot be parameter-bound in DDL, so
-     * it is escaped and inlined; identifiers are validated by create().
+     * Control-plane authorization. Tenant management provisions real databases
+     * and mutates the central registry, so it is restricted to platform admins.
+     * Enforced HERE (not only in the controller) so any caller of the published
+     * contract is gated — the HTTP guard is just a cheap early reject.
      */
-    private function provisionUser(DatabasePort $db, string $driver, string $dbName, string $dbUser, string $dbPass, string $dbHost): void
+    private function requireAdmin(): void
     {
-        if ($driver === 'pgsql') {
-            $pass   = "'" . str_replace("'", "''", $dbPass) . "'";
-            $exists = $db->queryOne('SELECT 1 AS present FROM pg_roles WHERE rolname = :u', ['u' => $dbUser]);
-            if ($exists === null) {
-                $db->execute("CREATE ROLE \"{$dbUser}\" LOGIN PASSWORD {$pass}");
-            } else {
-                $db->execute("ALTER ROLE \"{$dbUser}\" WITH LOGIN PASSWORD {$pass}");
-            }
-            $db->execute("GRANT ALL PRIVILEGES ON DATABASE \"{$dbName}\" TO \"{$dbUser}\"");
-            $db->execute("ALTER DATABASE \"{$dbName}\" OWNER TO \"{$dbUser}\"");
-
-            return;
-        }
-
-        if ($driver === 'sqlsrv') {
-            $pass  = "'" . str_replace("'", "''", $dbPass) . "'";
-            $login = str_replace(']', ']]', $dbUser);
-            $db->execute(
-                "IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '{$dbUser}') "
-                . "CREATE LOGIN [{$login}] WITH PASSWORD = {$pass}"
+        if ($this->identity->isGuest()
+            || (!$this->identity->hasPermission(self::ADMIN_PERMISSION)
+                && !$this->identity->hasRole(self::ADMIN_ROLE))) {
+            throw new SecurityException(
+                'tenancy.admin.forbidden',
+                layer: 'service.tenancy.admin',
             );
-            $db->execute(
-                "USE [{$dbName}]; "
-                . "IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '{$dbUser}') "
-                . "CREATE USER [{$login}] FOR LOGIN [{$login}]; "
-                . "ALTER ROLE db_owner ADD MEMBER [{$login}];"
-            );
-
-            return;
         }
-
-        // MySQL / MariaDB — pin the account to the connecting host (never '%').
-        $pass = "'" . str_replace(['\\', "'"], ['\\\\', "\\'"], $dbPass) . "'";
-        foreach ($this->grantHosts($dbHost) as $host) {
-            $db->execute("CREATE USER IF NOT EXISTS '{$dbUser}'@'{$host}' IDENTIFIED BY {$pass}");
-            $db->execute("GRANT ALL PRIVILEGES ON `{$dbName}`.* TO '{$dbUser}'@'{$host}'");
-        }
-        $db->execute('FLUSH PRIVILEGES');
-    }
-
-    /** Compensating teardown — undo everything this run created, in reverse order. */
-    private function rollbackProvisioning(
-        DatabasePort $central,
-        string $driver,
-        string $dbName,
-        string $dbUser,
-        string $dbHost,
-        string $tenantId,
-        bool $dbCreated,
-        bool $userCreated,
-    ): void {
-        if ($userCreated) {
-            try {
-                $this->dropDatabaseUser($central, $driver, $dbUser, $dbHost);
-            } catch (\Throwable) {
-            }
-        }
-        if ($dbCreated) {
-            try {
-                $this->dropDatabase($central, $driver, $dbName);
-            } catch (\Throwable) {
-            }
-        }
-        try {
-            $central->execute('DELETE FROM tenants WHERE tenant_id = :id', ['id' => $tenantId]);
-        } catch (\Throwable) {
-        }
-    }
-
-    private function central(): DatabasePort
-    {
-        return $this->connections->default();
     }
 
     private function defaultPort(string $driver): int
@@ -385,14 +256,5 @@ final class TenantAdminService implements TenantAdminServiceContract
             'deleted'      => TenantStatus::Deleted,
             default        => null,
         };
-    }
-
-    private function resolveTemplatePath(): string
-    {
-        if (is_string($this->templatePath) && $this->templatePath !== '') {
-            return $this->templatePath;
-        }
-
-        return dirname(__DIR__, 2) . '/database/tenant-template';
     }
 }

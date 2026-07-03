@@ -35,7 +35,7 @@ final class UserRepository implements UserStore
 
     private const COLUMNS =
         'user_id, username, email, password_hash, remember_token,
-         status, version, email_verified_at, created_at';
+         version, email_verified_at, created_at';
 
     public function __construct(
         private readonly DatabasePort $db,
@@ -130,17 +130,16 @@ final class UserRepository implements UserStore
             $this->db->execute(
                 'INSERT INTO ' . self::TABLE . '
                     (user_id, username, email, password_hash, remember_token,
-                     status, version, email_verified_at, created_at, updated_at)
+                     version, email_verified_at, created_at, updated_at)
                  VALUES
                     (:user_id, :username, :email, :password_hash, :remember_token,
-                     :status, :version, :email_verified_at, :created_at, :updated_at)',
+                     :version, :email_verified_at, :created_at, :updated_at)',
                 [
-                    'user_id'           => $user->id()->value(),
-                    'username'          => $user->username()->value(),
-                    'email'             => $user->email()->value(),
+                    'user_id'           => $user->id(),
+                    'username'          => $user->username(),
+                    'email'             => $user->email(),
                     'password_hash'     => $user->passwordHash(),
                     'remember_token'    => $user->rememberToken(),
-                    'status'            => $user->status()->value,
                     'version'           => $user->version(),
                     'email_verified_at' => self::fmt($user->emailVerifiedAt()),
                     'created_at'        => $now,
@@ -154,7 +153,7 @@ final class UserRepository implements UserStore
             throw new RepositoryException(
                 'Failed to insert user.',
                 layer: 'repository.user',
-                context: ['userId' => $user->id()->value()],
+                context: ['userId' => $user->id()],
                 previous: $e,
             );
         }
@@ -176,22 +175,20 @@ final class UserRepository implements UserStore
                     email             = :email,
                     password_hash     = :password_hash,
                     remember_token    = :remember_token,
-                    status            = :status,
                     email_verified_at = :email_verified_at,
                     version           = :version,
                     updated_at        = :updated_at
                  WHERE user_id = :user_id
                    AND version = :expected AND deleted_at IS NULL',
                 [
-                    'username'          => $user->username()->value(),
-                    'email'             => $user->email()->value(),
+                    'username'          => $user->username(),
+                    'email'             => $user->email(),
                     'password_hash'     => $user->passwordHash(),
                     'remember_token'    => $user->rememberToken(),
-                    'status'            => $user->status()->value,
                     'email_verified_at' => self::fmt($user->emailVerifiedAt()),
                     'version'           => $user->version(),
                     'updated_at'        => self::now(),
-                    'user_id'           => $user->id()->value(),
+                    'user_id'           => $user->id(),
                     'expected'          => $expected,
                 ],
             );
@@ -202,7 +199,7 @@ final class UserRepository implements UserStore
             throw new RepositoryException(
                 'Failed to update user.',
                 layer: 'repository.user',
-                context: ['userId' => $user->id()->value()],
+                context: ['userId' => $user->id()],
                 previous: $e,
             );
         }
@@ -211,7 +208,7 @@ final class UserRepository implements UserStore
             throw new OptimisticLockException(
                 'User was modified concurrently; reload and retry.',
                 layer: 'repository.user',
-                context: ['userId' => $user->id()->value(), 'expectedVersion' => $expected],
+                context: ['userId' => $user->id(), 'expectedVersion' => $expected],
             );
         }
     }
@@ -286,17 +283,9 @@ final class UserRepository implements UserStore
     /** @param array<string, mixed> $row */
     private static function hydrate(array $row): User
     {
-        return User::reconstitute(
-            id:              (string) $row['user_id'],
-            username:        (string) $row['username'],
-            email:           (string) $row['email'],
-            passwordHash:    (string) $row['password_hash'],
-            status:          (int) $row['status'],
-            rememberToken:   $row['remember_token'] !== null ? (string) $row['remember_token'] : null,
-            version:         (int) $row['version'],
-            emailVerifiedAt: $row['email_verified_at'] !== null ? (string) $row['email_verified_at'] : null,
-            createdAt:       (string) $row['created_at'],
-        );
+        // The Entity base hydrates from the raw row keyed by column name and
+        // records no events; casts apply lazily on read.
+        return User::reconstitute($row);
     }
 
     private static function now(): string

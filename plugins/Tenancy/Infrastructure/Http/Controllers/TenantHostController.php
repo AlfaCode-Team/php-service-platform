@@ -28,7 +28,7 @@ final class TenantHostController extends ApiController
         private readonly TenantHostServiceContract $hosts,
     ) {}
 
-    /** GET /api/tenant/hosts — list every host for the current tenant. */
+    /** GET /ajx/tenant/hosts — list every host for the current tenant. */
     public function index(): Response
     {
         $tenantId = $this->requireTenant();
@@ -41,7 +41,7 @@ final class TenantHostController extends ApiController
         return $this->ok(['data' => array_map(static fn ($h) => $h->toArray(), $hosts)]);
     }
 
-    /** POST /api/tenant/hosts — register a host; returns DNS challenge to publish. */
+    /** POST /ajx/tenant/hosts — register a host; returns DNS challenge to publish. */
     public function store(): Response
     {
         $tenantId = $this->requireHostManager();
@@ -70,7 +70,7 @@ final class TenantHostController extends ApiController
         return $this->created($instructions->toArray());
     }
 
-    /** GET /api/tenant/hosts/{hostId}/instructions — re-show the DNS challenge. */
+    /** GET /ajx/tenant/hosts/{hostId}/instructions — re-show the DNS challenge. */
     public function instructions(string $hostId): Response
     {
         $tenantId = $this->requireTenant();
@@ -87,7 +87,7 @@ final class TenantHostController extends ApiController
         return $this->ok($instructions->toArray());
     }
 
-    /** POST /api/tenant/hosts/{hostId}/verify — scan DNS and (de)verify the host. */
+    /** POST /ajx/tenant/hosts/{hostId}/verify — scan DNS and (de)verify the host. */
     public function verify(string $hostId): Response
     {
         $tenantId = $this->requireHostManager();
@@ -106,7 +106,7 @@ final class TenantHostController extends ApiController
         return $this->ok($result->toArray());
     }
 
-    /** POST /api/tenant/hosts/{hostId}/primary — make a verified host canonical. */
+    /** POST /ajx/tenant/hosts/{hostId}/primary — make a verified host canonical. */
     public function makePrimary(string $hostId): Response
     {
         $tenantId = $this->requireHostManager();
@@ -123,7 +123,7 @@ final class TenantHostController extends ApiController
         return $this->ok($host->toArray());
     }
 
-    /** DELETE /api/tenant/hosts/{hostId} — stop routing a host. */
+    /** DELETE /ajx/tenant/hosts/{hostId} — stop routing a host. */
     public function destroy(string $hostId): Response
     {
         $tenantId = $this->requireHostManager();

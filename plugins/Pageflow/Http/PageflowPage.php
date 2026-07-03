@@ -28,7 +28,7 @@ final readonly class PageflowPage
     {
         return [
             'component' => $this->component,
-            'props'     => (object) $this->props,
+            'props'     => $this->props,
             'url'       => $this->url,
             'version'   => $this->version,
         ];
@@ -36,6 +36,15 @@ final readonly class PageflowPage
 
     public function toJson(): string
     {
-        return json_encode($this->toArray(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        return json_encode($this->toArray(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Legacy boot script — the client reads window.initialPage. A layout
+     * template echoes this inside <head> or before its bundle.
+     */
+    public function renderScript(): string
+    {
+        return '<script>window.initialPage = ' . $this->toJson() . ';</script>';
     }
 }

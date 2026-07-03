@@ -16,8 +16,14 @@ and email are globally unique. Repositories + the outbox are pinned to the
 NEVER redirected to a tenant DB even when `TenantContextStage` rebinds
 `DatabasePort` for the request.
 
-`requires: ["database.management", "crypto.services", "cache.redis", "view.rendering"]`
-`exposes: ["Plugins\User\API\Contracts\UserServiceContract"]`
+`requires: ["database.management", "crypto.services", "cache.redis", "view.rendering", "http.client"]`
+`exposes: ["Plugins\User\API\Contracts\UserServiceContract"]` (the ONLY cross-module
+contract — feedback + settings are internal to the plugin)
+
+**No `status` column.** The login gate is a verified email: `verifyCredentials`
+checks `User::canLogin()` (= `email_verified_at` is set). "Disable" = soft delete.
+The old `status` / `auth_provider` / `provider_subject` / `is_platform_admin` /
+`last_login_at` columns were removed.
 
 ---
 
@@ -99,8 +105,14 @@ delete) — **identifiers + outcomes only, never passwords/hashes/PII**.
 
 | Table | Repository | Notes |
 |---|---|---|
-| `users` | `UserRepository` (central) | ULID `user_id`; unique username/email; `password_hash`, `remember_token` (60/64 char); `version` (optimistic lock) |
+| `users` | `UserRepository` (central) | ULID `user_id`; unique username/email; `password_hash`, `remember_token` (60/64 char); `version` (optimistic lock); login gate = `email_verified_at` |
 | `user_outbox` | `OutboxWriter` / `OutboxRelay` (central) | transactional integration-event outbox |
+| `user_feedback` | `FeedbackRepository` (TENANT) | tenant-scoped; `feedback_id` UUID public id; `user_id` = central ULID (soft ref, no FK) |
+| `user_profiles` / `user_preferences` / `user_privacy_settings` / `user_notification_preferences` | `UserSettingsRepository` (TENANT) | per-user singletons; one row per `user_id`; portable `upsert` |
+
+Central schema → `database/migrations/` (`migrate:run`). Tenant schema →
+`database/tenant-template/`, applied per-tenant by the **Tenancy** tooling
+(`tenant:migrate`), NOT `migrate:run`.
 
 - Passwords hashed via `crypto.services` (bcrypt, rehash-on-login). Hashes and
   remember tokens NEVER cross the API boundary.
@@ -111,9 +123,36 @@ delete) — **identifiers + outcomes only, never passwords/hashes/PII**.
 
 ## ROUTES (`module.json`)
 
-- HTML (View): `GET /users`, `/users/create`, `/users/{id}`, `/users/{id}/edit`.
-- JSON (`/ajx/...`): `POST /ajx/users` register (`throttle:10,1` — **anonymous**,
-  not auth-gated), `GET/PUT/PATCH/DELETE /ajx/users/{id}` + verify-email (`auth`).
+- HTML (View): `GET /users[...]`, plus demo pages `GET /account/settings`,
+  `/account/feedback`.
+- JSON identity (`/ajx/users...`): `POST /ajx/users` register (`throttle:10,1` —
+  **anonymous**, not auth-gated), `GET/PUT/PATCH/DELETE /ajx/users/{id}` +
+  verify-email (`auth`).
+- JSON feedback (`auth` + `tenant`): `POST /ajx/feedback` (`throttle:5,1`),
+  `GET /ajx/feedback`, `GET /ajx/feedback/{id}`, `PATCH /ajx/feedback/{id}`.
+- JSON settings (`auth` + `tenant`): `GET/PUT /ajx/{profile,preferences,privacy,
+  notification-preferences}` (PUT `throttle:30,1`).
+
+---
+
+## TENANT-SCOPED SUB-RESOURCES (feedback & settings)
+
+Internal capabilities whose data lives in the **tenant** DB (not central):
+
+- **Repositories take the request `DatabasePort`** (tenant-routed by
+  `TenantContextStage`), NOT `self::central()`. `user_id` is the central ULID,
+  carried as a soft reference (no cross-DB FK).
+- **Routes declare `["auth", "tenant"]`.** The `tenant` filter (Tenancy plugin)
+  returns **409** when no tenant is active → these never silently hit central.
+- **Self-scoped** — user id from `Identity`, never the body. AuthZ in the service.
+- **Internal, not published** — bound `bindInternal`; controllers depend on the
+  concrete `FeedbackService` / `UserSettingsService`. They return the domain
+  **entity** and the controller serialises via `entity->toArray()` (no output DTO).
+- **Feedback** = full CRUD (`submit`/`find`/`list`/`updateStatus`, forward-only
+  status, `feedback:manage` for triage); emits `feedback.submitted` **directly**
+  (single insert, not the outbox). **Settings** = one `UserSettingsService` +
+  `UserSettingsRepository` for the 4 singletons, idempotent `PUT` via `upsert`,
+  audited on write.
 
 ---
 
@@ -125,8 +164,10 @@ delete) — **identifiers + outcomes only, never passwords/hashes/PII**.
 ✓ Audit records identifiers/outcomes ONLY; DB persistence is best-effort and never aborts the action.
 ✓ Password hashes / remember tokens never appear in a DTO or response.
 ✓ Writes are optimistic-locked on `version`.
+✓ users/feedback/settings split connections: identity = CENTRAL, feedback/settings = TENANT (request DatabasePort).
 ✗ Importing a Tenancy class from User — User forwards the opaque 'tenant' request attribute only.
-✗ Dispatching integration events inline instead of via the outbox.
-✗ Returning entities/arrays across the contract — use API/DTOs.
-✗ Reading user identity from a tenant-routed DatabasePort — always central.
+✗ Dispatching user identity events inline instead of via the outbox (feedback.submitted is a single insert → direct dispatch is fine).
+✗ Returning entities across the PUBLISHED contract (UserServiceContract) — use API/DTOs. (Internal feedback/settings services return entities; their controllers toArray().)
+✗ Reading user IDENTITY from a tenant-routed DatabasePort — always central. (Feedback/settings deliberately DO use the tenant connection.)
+✗ Applying tenant-template schema with migrate:run — it is per-tenant (tenant:migrate).
 ```

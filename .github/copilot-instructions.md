@@ -1002,8 +1002,8 @@ First-party plugins (`plugins/`, namespace `Plugins\`; see `docs/ai-context/20_F
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
 | Pageflow | `http.pageflow` | `PageflowResponder` (SPA bridge) | on-demand |
 | SiteSEO | `seo.management` | `SeoServiceContract` — Open Graph/Twitter, Schema.org JSON-LD, sitemaps, robots.txt, sitemap ping + **IndexNow** (`indexNow()` auto-batches 10k, lazy iterable, dry-run; `SearchEngineGateway` → `HttpClientPort`). Bg job `seo.indexnow` + `UrlPublishedIntegrationEvent`/`EnqueueIndexNowListener` for index-on-publish | on-demand (`requires:["http.client"]`) |
-| Tenancy | `tenancy.routing` | Multi-tenant control plane: `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract`. Maps `Identity.tenantId` → isolated tenant `DatabasePort`, rebinds per request (`TenantContextStage` @ `after.load`). Fail-closed + per-tenant circuit breaker; central `tenants`/`user_tenants`/`tenant_invitations`/`refresh_tokens`/`audit_log`; database-per-tenant. Selection flow `GET /api/me/tenants` + `POST /api/tenants/{id}/select` (re-verifies membership, mints `tnt` token); email invitations → seat; one-time-use refresh rotation (re-checks membership, mints access JWT). CLI `tenants:create`/`tenants:migrate` | essential (`requires:["database.management","auth.identity","user.management"]`) |
-| User | `user.management` | GLOBAL central identity: `UserServiceContract` (register/CRUD, email verification, timing-safe + rate-limited credential verify, rehash-on-login). Repo + transactional outbox pinned to central; optimistic-locked; emits `user.registered/updated/deleted`; optional HIBP screening (`USER_BREACH_CHECK`). CLI `user:outbox:relay`. Guide `docs/ai-context/24_USER.md` | on-demand (`requires:["database.management","crypto.services","cache.redis","view.rendering","http.client"]`) |
+| Tenancy | `tenancy.routing` | Multi-tenant control plane: `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract`. Maps `Identity.tenantId` → isolated tenant `DatabasePort`, rebinds per request (`TenantContextStage` @ `after.load`). Fail-closed + per-tenant circuit breaker; central `tenants`/`user_tenants`/`tenant_invitations`/`refresh_tokens`/`audit_log`; database-per-tenant. Selection flow `GET /ajx/me/tenants` + `POST /ajx/tenants/{id}/select` (re-verifies membership, mints `tnt` token); email invitations → seat; one-time-use refresh rotation (re-checks membership, mints access JWT). Admin CRUD `/ajx/admin/tenants` is platform-admin-gated in BOTH the controller and `TenantAdminService` (`tenancy:admin`/`platform-admin`). Publishes the **`tenant` route filter** (`RequireTenantStage` → 409 when no active tenant) for tenant-only routes. CLI `tenants:create`/`tenants:migrate` | essential (`requires:["database.management","auth.identity","user.management"]`) |
+| User | `user.management` | GLOBAL central identity: `UserServiceContract` (register/CRUD, email verification, timing-safe + rate-limited credential verify, rehash-on-login). Login gate = verified email (`email_verified_at`); NO `status` column. Repo + transactional outbox pinned to CENTRAL; optimistic-locked; emits `user.registered/updated/deleted`; optional HIBP screening (`USER_BREACH_CHECK`). CLI `user:outbox:relay`. ALSO owns TENANT-scoped sub-resources (internal, NOT published, repos use the request/tenant `DatabasePort`, schema in `database/tenant-template/`): **feedback** (`POST/GET/PATCH /ajx/feedback`, emits `feedback.submitted`) and **settings** (one `UserSettingsService` → `GET/PUT /ajx/{profile,preferences,privacy,notification-preferences}`). Tenant routes declare `["auth","tenant"]`. Guide `docs/ai-context/24_USER.md` | on-demand (`requires:["database.management","crypto.services","cache.redis","view.rendering","http.client"]`) |
 | Auth | `auth.identity` | Authn. ISSUANCE `AuthServiceContract` (JWT w/ iss/aud/jti, asymmetric RS/ES/PS signing; PATs w/ expiry+abilities; web/AJAX session login). VERIFICATION SecurityLayers in `withSecurity([...])`: `JwtAuthLayer` (iss/aud/leeway, `jti` deny-list via CachePort) + `PersonalAccessTokenLayer`. `SessionAuthStage` @ after.load p22 → session Identity so the `auth` filter covers token AND session. Routes `/auth/login`,`/auth/logout`,`/auth/me`. CLI `auth:tokens:prune`. Guide `docs/ai-context/25_AUTH.md` | on-demand (SecurityLayers wired in bootstrap; `requires:["database.management","crypto.services","user.management"]`) |
 | OAuth2 | `oauth.server` | Native OAuth 2.1 + OIDC authz server (on `firebase/php-jwt`, no new vendor). Grants: authorization_code(+PKCE), client_credentials, refresh_token(rotation+family reuse-detection), password, device_code(RFC 8628). Endpoints `/oauth/{authorize,token,device_authorization,device,userinfo,introspect,revoke,jwks}` + RFC 8414/OIDC discovery. Access tokens are platform JWTs (verified by Auth `JwtAuthLayer`); scopes namespaced `scope:*` in `permissions`; `aud`=resource + `azp`=client; revoke=refresh-family + JWT `jti` deny-list. CONTROL-PLANE → serve on apex/central host (set `TENANCY_BASE_DOMAINS` in host mode). CLI `oauth:client:{create,list,revoke,rotate}`/`oauth:prune`. Guide `docs/ai-context/26_OAUTH2.md` | on-demand (`requires:["database.management","crypto.services","user.management","view.rendering"]`) |
 
@@ -1166,6 +1166,47 @@ JobResult::skipped('Invoice already paid — email not needed')
 
 ---
 
+## ENTITY / CASTING / HYDRATION SUPPORT (Project layer — `Project\Support\`)
+
+DI-free, I/O-free entity-mapping helpers under `projects/Support/` — the
+GDA-compliant decomposition of the legacy `__DEV__/Entity` Active Record (the fat
+AR base was split across the layers it conflated; only the reusable casting /
+mapping / entity-mechanics live here). Import nothing outside their own
+namespace; safe from any layer.
+
+| Namespace | Class | Role |
+|---|---|---|
+| `Project\Support\Casting` | `DataCaster` | Cast ONE field, either direction (`get`=DB→PHP, `set`=PHP→DB) |
+| `Project\Support\Casting` | `TypeParser` | Type string → `{nullable, baseType, params}` |
+| `Project\Support\Casting` | `CastInterface`/`BaseCast`/`CastException` | Cast contract + identity base + errors |
+| `Project\Support\Casting\Casts` | 11 built-ins | `int integer float double string bool boolean int-bool csv array json object datetime timestamp` |
+| `Project\Support\Hydration` | `DataConverter` | Map a whole DB row ⇄ object (Repository hydrator; pools casters by types-hash) |
+| `Project\Support\Entity` | `Entity` (abstract) | Enterprise base for domain entities; `JsonSerializable`+`ArrayAccess`+`Stringable` |
+
+Type grammar: `?`=nullable, `base[param,param]`=handler+params (e.g.
+`?json[array]`, `datetime[ms]`). `bool` casts on READ only — use `int-bool` when
+the column stores `0/1` and the WRITE must emit an int. Custom casts via the
+`castHandlers` arg / entity `$customCasters` (implement `CastInterface`).
+
+`Entity` base provides: bidirectional `$casts`; **mass-assignment guard, secure
+by default** (`$guarded=['*']`, `fill()` honours `$fillable`, `forceFill()`
+bypasses); `$hidden`/`$visible` (+ runtime `makeHidden/makeVisible`);
+`__debugInfo()` redacts `$hidden` as `********`; `$appends`; `$dates`/`$dateFormat`;
+typed getters `getString/getInt/getFloat/getBool/getArray/getDate`; change
+tracking `isDirty/isClean/wasChanged/getDirty/getChanges/getOriginal/syncOriginal`;
+domain-event buffer `recordEvent()`+`releaseEvents()` (Service flushes in-tx;
+entity never dispatches); `seal()` (mutation throws); hydrator seam
+`static reconstitute(array)`+`toRawArray()`; `getKey/exists/is/isNot`, `make()`,
+`replicate()` (drops PK).
+
+Repository pattern (NOT Active Record):
+`$e = Entity::reconstitute($row)` (or `DataConverter::reconstruct`) →
+`$db->upsert($table, $e->toRawArray(onlyChanged:true), ['id'])`.
+
+Guides: `projects/Support/Casting/README.md`, `projects/Support/Entity/README.md`.
+
+---
+
 ## WHAT COPILOT MUST NEVER GENERATE FOR THIS PROJECT
 
 ```
@@ -1187,6 +1228,11 @@ JobResult::skipped('Invoice already paid — email not needed')
 ✗ Module code importing another module's internal class — use published contract
 ✗ float for money values — use Money value object with integer cents
 ✗ Config vars or event declarations in PHP — they belong in module.json (project routes excepted: proj.json/withRoutes())
+✗ save()/delete()/find()/getRepo_() on a Project\Support\Entity\Entity — persistence is the Repository's job (DatabasePort)
+✗ Calling app()/kernel()/config() or querying the DB from inside an entity — entities never do I/O (no magic __get DB fallback)
+✗ float/getenv-style ad-hoc casting in a repository — declare $casts/types and run rows through DataCaster/DataConverter
+✗ reconstruct() relying on reflection to write private props — give the entity a static reconstitute()/toRawArray()
+✗ strict:false as a substitute for a nullable column — mark the type ?type instead
 ✗ throw inside a catch without rollbackTransaction() first
 ✗ hash comparison with === for tokens — use hash_equals() always
 ✗ Static properties in request-scoped classes — they leak between requests in Swoole

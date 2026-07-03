@@ -23,7 +23,7 @@ final class MembershipServiceTest extends TestCase
         MembershipStatus $status = MembershipStatus::Active,
         TenantStatus $tenantStatus = TenantStatus::Active,
     ): Membership {
-        return new Membership(
+        return Membership::of(
             userId: $userId, tenantId: $tenantId, tenantName: 'Acme ' . $tenantId,
             tenantSlug: 'acme-' . $tenantId, role: $role, status: $status, tenantStatus: $tenantStatus,
         );

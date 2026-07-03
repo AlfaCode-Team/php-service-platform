@@ -13,6 +13,7 @@ use Plugins\Settings\API\DTOs\ContactSettingsDTO;
 use Plugins\Settings\API\DTOs\EmailProviderSettingsDTO;
 use Plugins\Settings\API\DTOs\EmailSettingsDTO;
 use Plugins\Settings\API\DTOs\SystemSettingsDTO;
+use Plugins\Settings\Domain\Entities\TenantSettings;
 use Plugins\Settings\Domain\ValueObjects\SettingsSection;
 use Plugins\Settings\Infrastructure\Persistence\SettingsRepository;
 
@@ -26,11 +27,11 @@ final class SettingsService implements SettingsServiceContract
 
     public function company(string $tenantId): CompanySettingsDTO
     {
-        $row = $this->repository->fetch(SettingsSection::Company, $tenantId);
+        $settings = $this->repository->fetch(SettingsSection::Company, $tenantId);
 
-        return $row === null
+        return $settings === null
             ? CompanySettingsDTO::defaults($tenantId)
-            : CompanySettingsDTO::fromRow($row);
+            : CompanySettingsDTO::fromRow($settings->toRawArray());
     }
 
     public function saveCompany(CompanySettingsDTO $settings): CompanySettingsDTO
@@ -58,11 +59,11 @@ final class SettingsService implements SettingsServiceContract
 
     public function contact(string $tenantId): ContactSettingsDTO
     {
-        $row = $this->repository->fetch(SettingsSection::Contact, $tenantId);
+        $settings = $this->repository->fetch(SettingsSection::Contact, $tenantId);
 
-        return $row === null
+        return $settings === null
             ? ContactSettingsDTO::defaults($tenantId)
-            : ContactSettingsDTO::fromRow($row);
+            : ContactSettingsDTO::fromRow($settings->toRawArray());
     }
 
     public function saveContact(ContactSettingsDTO $settings): ContactSettingsDTO
@@ -74,11 +75,11 @@ final class SettingsService implements SettingsServiceContract
 
     public function email(string $tenantId): EmailSettingsDTO
     {
-        $row = $this->repository->fetch(SettingsSection::Email, $tenantId);
+        $settings = $this->repository->fetch(SettingsSection::Email, $tenantId);
 
-        return $row === null
+        return $settings === null
             ? EmailSettingsDTO::defaults($tenantId)
-            : EmailSettingsDTO::fromRow($row);
+            : EmailSettingsDTO::fromRow($settings->toRawArray());
     }
 
     public function saveEmail(EmailSettingsDTO $settings): EmailSettingsDTO
@@ -90,11 +91,11 @@ final class SettingsService implements SettingsServiceContract
 
     public function emailProviders(string $tenantId): EmailProviderSettingsDTO
     {
-        $row = $this->repository->fetch(SettingsSection::EmailProviders, $tenantId);
+        $settings = $this->repository->fetch(SettingsSection::EmailProviders, $tenantId);
 
-        return $row === null
+        return $settings === null
             ? EmailProviderSettingsDTO::defaults($tenantId)
-            : EmailProviderSettingsDTO::fromRow($row);
+            : EmailProviderSettingsDTO::fromRow($settings->toRawArray());
     }
 
     public function saveEmailProviders(EmailProviderSettingsDTO $settings): EmailProviderSettingsDTO
@@ -106,11 +107,11 @@ final class SettingsService implements SettingsServiceContract
 
     public function system(string $tenantId): SystemSettingsDTO
     {
-        $row = $this->repository->fetch(SettingsSection::System, $tenantId);
+        $settings = $this->repository->fetch(SettingsSection::System, $tenantId);
 
-        return $row === null
+        return $settings === null
             ? SystemSettingsDTO::defaults($tenantId)
-            : SystemSettingsDTO::fromRow($row);
+            : SystemSettingsDTO::fromRow($settings->toRawArray());
     }
 
     public function saveSystem(SystemSettingsDTO $settings): SystemSettingsDTO
@@ -129,7 +130,7 @@ final class SettingsService implements SettingsServiceContract
 
         $this->transaction->begin();
         try {
-            $this->repository->upsert($section, $row);
+            $this->repository->upsert(TenantSettings::draft($section, $row));
             $this->transaction->commit();
         } catch (\Throwable $e) {
             $this->transaction->rollback();

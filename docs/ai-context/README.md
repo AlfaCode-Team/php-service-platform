@@ -53,6 +53,7 @@ Canonical install/distribution guide:
 | `24_USER.md` | User plugin: central identity, UserServiceContract, transactional outbox, audit_log persistence, tenant-origin on user.registered | When working on users, registration, credentials, or the user outbox/audit |
 | `25_AUTH.md` | Auth plugin: JWT/PAT/session issuance + verification, JwtAuthLayer (iss/aud/leeway, jti revocation), asymmetric signing, SessionAuthStage, `/auth` routes | When working on authentication, tokens, login/sessions, or SecurityLayers |
 | `26_OAUTH2.md` | OAuth2 plugin: OAuth 2.1 + OIDC authorization server — grants (auth-code/PKCE, client-credentials, refresh, password, device), JWKS, introspection/revocation, scope namespacing, apex-host placement | When working on third-party/delegated auth, OAuth clients, OIDC, or `/oauth/*` |
+| `27_ENTITY_SUPPORT.md` | `Project\Support`: DataCaster casting engine, TypeParser grammar, built-in + custom casts, DataConverter hydrator, the enterprise `Entity` base — GDA-safe decomposition of the legacy Active Record | When mapping DB rows to entities, casting fields, or extending the `Entity` base |
 
 ---
 

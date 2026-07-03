@@ -455,6 +455,20 @@ Contains:
 
 ---
 
+## 27_ENTITY_SUPPORT.md
+**USE: When mapping DB rows to entities, casting fields, or extending the `Entity` base**
+
+Contains:
+- `Project\Support` — GDA-safe decomposition of the legacy `__DEV__/Entity` Active Record
+- `DataCaster` engine (get/set directions, nullability, strictness) + `TypeParser` grammar
+- 11 built-in casts table (`int`/`bool`/`int-bool`/`csv`/`array`/`json[array]`/`datetime`/`timestamp`/…) + custom casts
+- `DataConverter` hydrator: `reconstruct()`/`extract()`/`fromDataSource()`/`toDataSource()`, caster pooling
+- `Entity` base: `$casts`/`$fillable`/`$guarded`/`$hidden`/`$appends`/`$dates`, typed getters,
+  change tracking, domain-event buffer, `seal()`, `__debugInfo()` secret redaction, `reconstitute()`/`toRawArray()`
+- Security (mass-assignment deny-by-default, redaction), Repository pattern, absolute rules
+
+---
+
 ## CLAUDE_AI_GUIDE.md
 **USE: Read this to understand how to use all files in Claude.ai**
 

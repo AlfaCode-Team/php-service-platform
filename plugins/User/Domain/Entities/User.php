@@ -4,43 +4,42 @@ declare(strict_types=1);
 
 namespace Plugins\User\Domain\Entities;
 
-use AlfacodeTeam\PhpServicePlatform\Kernel\Events\Contracts\DomainEventContract;
 use Plugins\User\Domain\Events\UserDeletedDomainEvent;
 use Plugins\User\Domain\Events\UserRegisteredDomainEvent;
 use Plugins\User\Domain\Events\UserUpdatedDomainEvent;
 use Plugins\User\Domain\ValueObjects\Email;
 use Plugins\User\Domain\ValueObjects\UserId;
 use Plugins\User\Domain\ValueObjects\Username;
-use Plugins\User\Domain\ValueObjects\UserStatus;
+use Project\Support\Entity\Entity;
 
 /**
  * User aggregate — mirrors the `users` table.
  *
- * The Domain layer stays pure: it never hashes a password itself (that needs
- * the crypto.services HashingPort). The Application service hashes the plaintext
- * and passes the resulting bcrypt string in; this entity only ever holds the
- * already-hashed value, and that value is never exposed back out.
+ * Built on the shared {@see Entity} attribute-bag base: state lives in the bag
+ * keyed by DB column name, with bidirectional casting through $casts. The
+ * Domain layer stays pure — it never hashes a password (that needs the
+ * crypto.services HashingPort); the Application service hashes plaintext and
+ * passes the already-hashed value in. The hash is $hidden so it never leaks
+ * into serialization or var_dump output.
  */
-final class User
+final class User extends Entity
 {
-    /** @var list<DomainEventContract> */
-    private array $domainEvents = [];
+    protected string $primaryKey = 'user_id';
 
-    /** Field names mutated since the last persistence — drives the update event. */
-    /** @var list<string> */
-    private array $changed = [];
+    /** @var array<string, string> */
+    protected array $casts = [
+        'version' => 'int',
+        // Entity short-circuits casts on null, so a plain (non-nullable) datetime
+        // cast is correct here — a '?datetime' would leak a 'nullable' param into
+        // DatetimeCast and be misread as a literal date format.
+        'email_verified_at' => 'datetime',
+        'created_at' => 'datetime',
+    ];
 
-    private function __construct(
-        private readonly UserId $id,
-        private Username $username,
-        private Email $email,
-        private string $passwordHash,
-        private UserStatus $status,
-        private ?string $rememberToken,
-        private int $version,
-        private ?\DateTimeImmutable $emailVerifiedAt,
-        private readonly \DateTimeImmutable $createdAt,
-    ) {}
+    /** Credentials never cross the serialization boundary. */
+    protected array $hidden = ['password_hash', 'remember_token'];
+
+ 
 
     /**
      * Register a brand-new user. $passwordHash MUST already be a bcrypt hash
@@ -50,114 +49,72 @@ final class User
         Username $username,
         Email $email,
         string $passwordHash,
-        UserStatus $status = UserStatus::Pending,
     ): self {
         self::assertBcrypt($passwordHash, 'User must be created with a bcrypt password hash.');
 
-        $user = new self(
-            id:              UserId::generate(),
-            username:        $username,
-            email:           $email,
-            passwordHash:    $passwordHash,
-            status:          $status,
-            rememberToken:   null,
-            version:         1,
-            emailVerifiedAt: null,
-            createdAt:       new \DateTimeImmutable(),
-        );
+        $id = UserId::generate();
+        $createdAt = new \DateTimeImmutable();
 
-        $user->domainEvents[] = new UserRegisteredDomainEvent(
-            userId:     $user->id,
-            username:   $user->username,
-            email:      $user->email,
-            occurredAt: $user->createdAt,
-        );
+        $user = (new self())->forceFill([
+            'user_id' => $id->value(),
+            'username' => $username->value(),
+            'email' => $email->value(),
+            'password_hash' => $passwordHash,
+            'remember_token' => null,
+            'version' => 1,
+            'email_verified_at' => null,
+            'created_at' => $createdAt,
+        ]);
+        $user->syncOriginal();
+
+        $user->recordEvent(new UserRegisteredDomainEvent(
+            userId: $id,
+            username: $username,
+            email: $email,
+            occurredAt: $createdAt,
+        ));
 
         return $user;
     }
 
-    /** Rehydrate from persistence — records NO events. */
-    public static function reconstitute(
-        string $id,
-        string $username,
-        string $email,
-        string $passwordHash,
-        int $status,
-        ?string $rememberToken,
-        int $version,
-        ?string $emailVerifiedAt,
-        string $createdAt,
-    ): self {
-        return new self(
-            id:              UserId::fromString($id),
-            username:        Username::fromString($username),
-            email:           Email::fromString($email),
-            passwordHash:    $passwordHash,
-            status:          UserStatus::from($status),
-            rememberToken:   $rememberToken,
-            version:         $version,
-            emailVerifiedAt: $emailVerifiedAt !== null ? new \DateTimeImmutable($emailVerifiedAt) : null,
-            createdAt:       new \DateTimeImmutable($createdAt),
-        );
-    }
-
     public function changeEmail(Email $email): void
     {
-        if ($email->value() === $this->email->value()) {
+        if ($email->value() === $this->email()) {
             return;
         }
-        $this->email = $email;
+        $this->email = $email->value();
         // A new address is unverified until reconfirmed.
-        $this->emailVerifiedAt = null;
-        $this->markChanged('email');
+        $this->email_verified_at = null;
     }
 
     public function rename(Username $username): void
     {
-        if ($username->value() === $this->username->value()) {
+        if ($username->value() === $this->username()) {
             return;
         }
-        $this->username = $username;
-        $this->markChanged('username');
+        $this->username = $username->value();
     }
 
     /** Replace the stored credential with a new bcrypt hash. */
     public function changePassword(string $passwordHash): void
     {
         self::assertBcrypt($passwordHash, 'Password must be a bcrypt hash.');
-        $this->passwordHash = $passwordHash;
+        $this->password_hash = $passwordHash;
         // Any "remember me" sessions are invalidated on credential change.
-        $this->rememberToken = null;
-        $this->markChanged('password');
+        $this->remember_token = null;
     }
 
-    /** Mark the email confirmed; a pending account becomes active. */
+    /**
+     * Mark the email confirmed. Email verification is the account's login gate
+     * (see canLogin / UserService::verifyCredentials) — a verified address is
+     * what makes the account usable.
+     */
     public function verifyEmail(): void
     {
-        if ($this->emailVerifiedAt !== null) {
+        if ($this->emailVerifiedAt() !== null) {
             return;
         }
-        $this->emailVerifiedAt = new \DateTimeImmutable();
-        if ($this->status === UserStatus::Pending) {
-            $this->status = UserStatus::Active;
-        }
-        $this->markChanged('email_verified');
-    }
-
-    public function activate(): void
-    {
-        if (!$this->status->isActive()) {
-            $this->status = UserStatus::Active;
-            $this->markChanged('status');
-        }
-    }
-
-    public function deactivate(): void
-    {
-        if ($this->status !== UserStatus::Inactive) {
-            $this->status = UserStatus::Inactive;
-            $this->markChanged('status');
-        }
+        $this->email_verified_at = new \DateTimeImmutable();
     }
 
     /**
@@ -167,18 +124,21 @@ final class User
      */
     public function commitChanges(): bool
     {
-        if ($this->changed === []) {
+        $changed = $this->getChanges();
+        if ($changed === []) {
             return false;
         }
 
-        $this->version++;
+        $this->version = $this->version() + 1;
 
-        $this->domainEvents[] = new UserUpdatedDomainEvent(
-            userId:     $this->id,
-            changed:    array_values(array_unique($this->changed)),
+        $this->recordEvent(new UserUpdatedDomainEvent(
+            userId: UserId::fromString($this->id()),
+            changed: array_values(array_unique($changed)),
             occurredAt: new \DateTimeImmutable(),
-        );
-        $this->changed = [];
+        ));
+
+        
+        $this->syncOriginal();
 
         return true;
     }
@@ -186,29 +146,17 @@ final class User
     /** Record the (soft-)deletion event. */
     public function markDeleted(): void
     {
-        $this->domainEvents[] = new UserDeletedDomainEvent(
-            userId:     $this->id,
+        $this->recordEvent(new UserDeletedDomainEvent(
+            userId: UserId::fromString($this->id()),
             occurredAt: new \DateTimeImmutable(),
-        );
+        ));
     }
 
-    private function markChanged(string $field): void
-    {
-        $this->changed[] = $field;
-    }
 
     /** Store the SHA-256 of a "remember me" token (never the raw token). */
     public function setRememberTokenHash(?string $sha256Hash): void
     {
-        $this->rememberToken = $sha256Hash;
-    }
-
-    /** @return list<DomainEventContract> */
-    public function releaseEvents(): array
-    {
-        $events = $this->domainEvents;
-        $this->domainEvents = [];
-        return $events;
+        $this->remember_token = $sha256Hash;
     }
 
     private static function assertBcrypt(string $hash, string $message): void
@@ -219,16 +167,51 @@ final class User
         }
     }
 
-    public function id(): UserId                       { return $this->id; }
-    public function username(): Username               { return $this->username; }
-    public function email(): Email                     { return $this->email; }
-    public function status(): UserStatus               { return $this->status; }
-    public function version(): int                     { return $this->version; }
-    public function createdAt(): \DateTimeImmutable    { return $this->createdAt; }
-    public function emailVerifiedAt(): ?\DateTimeImmutable { return $this->emailVerifiedAt; }
-    public function isEmailVerified(): bool            { return $this->emailVerifiedAt !== null; }
+    // ─── scalar accessors (replace the former Value-Object getters) ──────────
+
+    public function id(): string
+    {
+        return $this->getString('user_id');
+    }
+    public function username(): string
+    {
+        return $this->getString('username');
+    }
+    public function email(): string
+    {
+        return $this->getString('email');
+    }
+    public function version(): int
+    {
+        return $this->getInt('version');
+    }
+    public function createdAt(): \DateTimeImmutable
+    {
+        return $this->getDate('created_at') ?? new \DateTimeImmutable();
+    }
+    public function emailVerifiedAt(): ?\DateTimeImmutable
+    {
+        return $this->getDate('email_verified_at');
+    }
+    public function isEmailVerified(): bool
+    {
+        return $this->emailVerifiedAt() !== null;
+    }
+
+    /** A verified email is the login gate (replaces the old status column). */
+    public function canLogin(): bool
+    {
+        return $this->emailVerifiedAt() !== null;
+    }
 
     /** Persistence-only accessors — never serialise these into a response. */
-    public function passwordHash(): string   { return $this->passwordHash; }
-    public function rememberToken(): ?string { return $this->rememberToken; }
+    public function passwordHash(): string
+    {
+        return $this->getString('password_hash');
+    }
+    public function rememberToken(): ?string
+    {
+        $v = $this->getRawAttribute('remember_token');
+        return $v === null ? null : (string) $v;
+    }
 }

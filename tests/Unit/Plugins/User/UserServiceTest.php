@@ -137,15 +137,15 @@ final class UserServiceTest extends TestCase
         $svc   = $this->service(Identity::asUser('not-the-owner'));
 
         $this->expectException(SecurityException::class);
-        $svc->find($other->id()->value());
+        $svc->find($other->id());
     }
 
     public function test_user_can_read_self(): void
     {
         $me  = $this->seedUser();
-        $svc = $this->service(Identity::asUser($me->id()->value()));
+        $svc = $this->service(Identity::asUser($me->id()));
 
-        $this->assertNotNull($svc->find($me->id()->value()));
+        $this->assertNotNull($svc->find($me->id()));
     }
 
     // ── update / delete events ─────────────────────────────────────────────────
@@ -153,24 +153,24 @@ final class UserServiceTest extends TestCase
     public function test_update_changes_username_and_emits_event(): void
     {
         $me  = $this->seedUser('oldname');
-        $svc = $this->service(Identity::asUser($me->id()->value()));
+        $svc = $this->service(Identity::asUser($me->id()));
 
         $dto = UpdateUserDTO::fromRequest(FakeRequest::with(['username' => 'newname']));
-        $result = $svc->update($me->id()->value(), $dto);
+        $result = $svc->update($me->id(), $dto);
 
         $this->assertSame('newname', $result?->username);
         $this->assertContains('user.updated', $this->outbox->names());
-        $this->assertSame(2, $this->store->find($me->id()->value())?->version());
+        $this->assertSame(2, $this->store->find($me->id())?->version());
     }
 
     public function test_delete_self_emits_event(): void
     {
         $me  = $this->seedUser();
-        $svc = $this->service(Identity::asUser($me->id()->value()));
+        $svc = $this->service(Identity::asUser($me->id()));
 
-        $this->assertTrue($svc->delete($me->id()->value()));
+        $this->assertTrue($svc->delete($me->id()));
         $this->assertContains('user.deleted', $this->outbox->names());
-        $this->assertNull($this->store->find($me->id()->value()));
+        $this->assertNull($this->store->find($me->id()));
     }
 
     // ── login / lockout ─────────────────────────────────────────────────────────
@@ -214,7 +214,7 @@ final class UserServiceTest extends TestCase
         $svc = $this->service(Identity::guest());
 
         $this->assertNotNull($svc->verifyCredentials('active', 'Sup3rSecret!!'));
-        $this->assertArrayHasKey($u->id()->value(), $this->store->rehashed);
+        $this->assertArrayHasKey($u->id(), $this->store->rehashed);
     }
 
     /** Seed an already-active, email-verified user (login-eligible). */

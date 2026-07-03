@@ -32,8 +32,8 @@ final class FakeUserStore implements UserStore
     public function findByIdentifier(string $identifier): ?User
     {
         foreach ($this->byId as $u) {
-            if ($u->username()->value() === $identifier
-                || $u->email()->value() === mb_strtolower($identifier)) {
+            if ($u->username() === $identifier
+                || $u->email() === mb_strtolower($identifier)) {
                 return $u;
             }
         }
@@ -43,10 +43,10 @@ final class FakeUserStore implements UserStore
     public function existsByUsernameOrEmail(string $username, string $email, ?string $exceptUserId = null): bool
     {
         foreach ($this->byId as $u) {
-            if ($u->id()->value() === $exceptUserId) {
+            if ($u->id() === $exceptUserId) {
                 continue;
             }
-            if ($u->username()->value() === $username || $u->email()->value() === $email) {
+            if ($u->username() === $username || $u->email() === $email) {
                 return true;
             }
         }
@@ -55,15 +55,15 @@ final class FakeUserStore implements UserStore
 
     public function insert(User $user): void
     {
-        if ($this->existsByUsernameOrEmail($user->username()->value(), $user->email()->value())) {
+        if ($this->existsByUsernameOrEmail($user->username(), $user->email())) {
             throw new DuplicateUserException();
         }
-        $this->byId[$user->id()->value()] = $user;
+        $this->byId[$user->id()] = $user;
     }
 
     public function update(User $user): void
     {
-        $this->byId[$user->id()->value()] = $user;
+        $this->byId[$user->id()] = $user;
     }
 
     public function persistRehash(string $userId, string $passwordHash): void
