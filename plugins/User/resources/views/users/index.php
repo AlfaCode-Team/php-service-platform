@@ -1,11 +1,11 @@
 <?php
 /**
- * Users list page (user::users/index). Hydrates over AJAX from GET /api/users.
+ * Users list page (user::users/index). Hydrates over AJAX from GET /ajx/users.
  */
 ?>
 <div class="card">
     <h2>Users</h2>
-    <p class="muted">Loaded from <code>GET /api/users</code> (requires the <code>auth</code> filter).</p>
+    <p class="muted">Loaded from <code>GET /ajx/users</code> (requires the <code>auth</code> filter).</p>
 
     <table>
         <thead>
@@ -52,8 +52,8 @@
             row.querySelector('.c-username').textContent = u.username;
             row.querySelector('.c-email').textContent = u.email;
             const status = row.querySelector('.c-status');
-            status.textContent = u.status;
-            if (u.status === 'active') status.classList.add('active');
+            status.textContent = u.emailVerified ? 'verified' : 'unverified';
+            if (u.emailVerified) status.classList.add('active');
             row.querySelector('.c-created').textContent = new Date(u.createdAt).toLocaleString();
             row.querySelector('.c-view').href = '/users/' + encodeURIComponent(u.id);
             row.querySelector('.c-edit').href = '/users/' + encodeURIComponent(u.id) + '/edit';

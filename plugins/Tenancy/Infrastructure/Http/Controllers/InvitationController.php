@@ -23,7 +23,7 @@ final class InvitationController extends ApiController
         private readonly UserServiceContract $users,
     ) {}
 
-    /** POST /api/invitations/accept  { "token": "…" } */
+    /** POST /ajx/invitations/accept  { "token": "…" } */
     public function accept(): Response
     {
         $identity = $this->identity();

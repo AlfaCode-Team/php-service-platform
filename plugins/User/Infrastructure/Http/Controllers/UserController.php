@@ -38,7 +38,7 @@ final class UserController extends ApiController
     public function register(): Response
     {
         $user = $this->users->register(RegisterUserDTO::fromRequest($this->resolveRequest()));
-        return $this->created($user->toArray(), location: "/api/users/{$user->id}");
+        return $this->created($user->toArray(), location: "/ajx/users/{$user->id}");
     }
 
     public function show(string $id): Response

@@ -292,10 +292,10 @@ final class OAuth2FlowTest extends TestCase
         };
 
         $clients = new InMemoryClientStore([
-            new Client('public-spa', 'SPA', null, [self::REDIRECT], ['authorization_code', 'refresh_token'], ['profile', 'openid'], false),
-            new Client('web-app', 'Web App', 'h:websecret', [self::REDIRECT], ['authorization_code', 'refresh_token'], ['profile', 'openid', 'email'], true),
-            new Client('confidential-svc', 'Service', 'h:s3cret', [], ['client_credentials'], ['reports'], true),
-            new Client('device-tv', 'TV App', null, [], ['urn:ietf:params:oauth:grant-type:device_code'], ['profile'], false),
+            Client::of('public-spa', 'SPA', null, [self::REDIRECT], ['authorization_code', 'refresh_token'], ['profile', 'openid'], false),
+            Client::of('web-app', 'Web App', 'h:websecret', [self::REDIRECT], ['authorization_code', 'refresh_token'], ['profile', 'openid', 'email'], true),
+            Client::of('confidential-svc', 'Service', 'h:s3cret', [], ['client_credentials'], ['reports'], true),
+            Client::of('device-tv', 'TV App', null, [], ['urn:ietf:params:oauth:grant-type:device_code'], ['profile'], false),
         ]);
         $codes   = new InMemoryAuthCodeStore();
         $refresh = new InMemoryRefreshTokenStore();
@@ -331,7 +331,7 @@ final class InMemoryClientStore implements ClientStore
 
     public function create(string $id, string $name, ?string $secretHash, array $redirectUris, array $grantTypes, array $scopes, bool $confidential): void
     {
-        $this->byId[$id] = new Client($id, $name, $secretHash, $redirectUris, $grantTypes, $scopes, $confidential);
+        $this->byId[$id] = Client::of($id, $name, $secretHash, $redirectUris, $grantTypes, $scopes, $confidential);
     }
 
     public function all(): array { return array_values($this->byId); }
@@ -342,7 +342,7 @@ final class InMemoryClientStore implements ClientStore
         if ($c === null) {
             return false;
         }
-        $this->byId[$id] = new Client($c->id, $c->name, $c->secretHash, $c->redirectUris, $c->grantTypes, $c->scopes, $c->confidential, true);
+        $this->byId[$id] = Client::of($c->id, $c->name, $c->secretHash, $c->redirectUris, $c->grantTypes, $c->scopes, $c->confidential, true);
 
         return true;
     }
@@ -353,7 +353,7 @@ final class InMemoryClientStore implements ClientStore
         if ($c === null || !$c->confidential) {
             return false;
         }
-        $this->byId[$id] = new Client($c->id, $c->name, $secretHash, $c->redirectUris, $c->grantTypes, $c->scopes, true, $c->revoked);
+        $this->byId[$id] = Client::of($c->id, $c->name, $secretHash, $c->redirectUris, $c->grantTypes, $c->scopes, true, $c->revoked);
 
         return true;
     }
@@ -380,7 +380,7 @@ final class InMemoryAuthCodeStore implements AuthCodeStore
         }
         $c = $row['code'];
 
-        return new AuthCode($c->id, $c->clientId, $c->userId, $c->redirectUri, $c->scopes, $c->codeChallenge, $c->codeChallengeMethod, $c->expiresAt, $row['consumed'], $c->nonce);
+        return AuthCode::of($c->id, $c->clientId, $c->userId, $c->redirectUri, $c->scopes, $c->codeChallenge, $c->codeChallengeMethod, $c->expiresAt, $row['consumed'], $c->nonce);
     }
 
     public function consume(string $codeId): bool
@@ -418,7 +418,7 @@ final class InMemoryRefreshTokenStore implements RefreshTokenStore
         }
         $t = $row['token'];
 
-        return new RefreshToken($t->id, $t->familyId, $t->clientId, $t->userId, $t->scopes, $t->expiresAt, $row['revoked']);
+        return RefreshToken::of($t->id, $t->familyId, $t->clientId, $t->userId, $t->scopes, $t->expiresAt, $row['revoked']);
     }
 
     public function revokeIfActive(string $tokenId): bool
@@ -500,7 +500,7 @@ final class InMemoryDeviceCodeStore implements DeviceCodeStore
     {
         $d = $this->byId[$id] ?? null;
         if ($d !== null) {
-            $this->byId[$id] = new DeviceCode($d->id, $d->userCode, $d->clientId, $d->scopes, $d->status, $d->userId, $d->interval, $at, $d->expiresAt);
+            $this->byId[$id] = DeviceCode::of($d->id, $d->userCode, $d->clientId, $d->scopes, $d->status, $d->userId, $d->interval, $at, $d->expiresAt);
         }
     }
 
@@ -517,7 +517,7 @@ final class InMemoryDeviceCodeStore implements DeviceCodeStore
         if ($d === null || $d->status !== $from) {
             return false;
         }
-        $this->byId[$id] = new DeviceCode($d->id, $d->userCode, $d->clientId, $d->scopes, $to, $userId ?? $d->userId, $d->interval, $d->lastPolledAt, $d->expiresAt);
+        $this->byId[$id] = DeviceCode::of($d->id, $d->userCode, $d->clientId, $d->scopes, $to, $userId ?? $d->userId, $d->interval, $d->lastPolledAt, $d->expiresAt);
 
         return true;
     }

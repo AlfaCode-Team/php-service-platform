@@ -24,18 +24,22 @@ use Plugins\Tenancy\API\Contracts\TenantHostServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantRegistryContract;
 use Plugins\Tenancy\Application\Ports\AuditReader;
 use Plugins\Tenancy\Application\Ports\AuditSink;
+use Plugins\Tenancy\Application\Ports\AuditWriter;
 use Plugins\Tenancy\Application\Ports\InvitationStore;
 use Plugins\Tenancy\Application\Ports\MembershipReader;
 use Plugins\Tenancy\Application\Ports\MembershipWriter;
 use Plugins\Tenancy\Application\Ports\DnsResolver;
 use Plugins\Tenancy\Application\Ports\RefreshTokenStore;
+use Plugins\Tenancy\Application\Ports\TenantProvisioner;
+use Plugins\Tenancy\Application\Ports\TenantWriteStore;
 use Plugins\Tenancy\Application\Ports\TenantHostStore;
+use Plugins\Tenancy\Application\Services\AuditService;
 use Plugins\Tenancy\Application\Services\InvitationService;
 use Plugins\Tenancy\Application\Services\MembershipService;
 use Plugins\Tenancy\Application\Services\RefreshTokenService;
 use Plugins\Tenancy\Application\Services\TenantAdminService;
 use Plugins\Tenancy\Application\Services\TenantHostService;
-use Plugins\Tenancy\Infrastructure\Audit\AuditTrail;
+use Plugins\Tenancy\Infrastructure\Persistence\AuditTrail;
 use Plugins\Tenancy\Infrastructure\Persistence\AuditLogRepository;
 use Plugins\Tenancy\Infrastructure\Dns\SystemDnsResolver;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\AuthTokenController;
@@ -52,7 +56,9 @@ use Plugins\Tenancy\Infrastructure\Http\Stages\TenantContextStage;
 use Plugins\Tenancy\Infrastructure\Persistence\InvitationRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\MembershipRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\RefreshTokenRepository;
+use Plugins\Tenancy\Infrastructure\Persistence\TenantAdminRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantHostRegistry;
+use Plugins\Tenancy\Infrastructure\Provisioning\DdlTenantProvisioner;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantHostRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantRegistry;
 use Plugins\Tenancy\Infrastructure\TenantConnectionResolver;
@@ -187,8 +193,13 @@ final class Provider implements ModuleContract
         $container->bindInternal(MembershipReader::class, static fn ($c): MembershipReader =>
             new MembershipRepository($c->make(DatabaseConnectionManagerContract::class)->default()));
 
-        $container->bindInternal(AuditSink::class, static fn ($c): AuditSink =>
+        // Write side: repository (persistence seam) behind the audit service.
+        $container->bindInternal(AuditWriter::class, static fn ($c): AuditWriter =>
             new AuditTrail($c->make(DatabaseConnectionManagerContract::class)->default()));
+
+        // Application service owns the best-effort policy consumed by all services.
+        $container->bindInternal(AuditSink::class, static fn ($c): AuditSink =>
+            new AuditService($c->make(AuditWriter::class), self::optionalLogger($c)));
 
         // Read/query side of the same central `audit_log` table.
         $container->bindInternal(AuditReader::class, static fn ($c): AuditReader =>
@@ -207,17 +218,31 @@ final class Provider implements ModuleContract
 
         // ── tenant administration (control-plane CRUD) ───────────────────────
         // Provisions/updates/de-provisions tenants over HTTP — the JSON twin of
-        // the tenant:create / tenant:delete CLI commands. Central connection only.
-        $container->bind(TenantAdminServiceContract::class, static function ($c): TenantAdminServiceContract {
+        // the tenant:create / tenant:delete CLI commands. The service orchestrates
+        // two internal ports: persistence (DatabasePort only) and provisioning
+        // (DDL + template migrations). Both pin to the CENTRAL connection.
+        $container->bindInternal(TenantWriteStore::class, static fn ($c): TenantWriteStore =>
+            new TenantAdminRepository($c->make(DatabaseConnectionManagerContract::class)->default()));
+
+        $container->bindInternal(TenantProvisioner::class, static function ($c): TenantProvisioner {
             $template = env('TENANCY_TEMPLATE_PATH');
 
-            return new TenantAdminService(
-                connections: $c->make(DatabaseConnectionManagerContract::class),
-                crypto:      $c->make(EncryptionPort::class),
-                registry:    $c->make(TenantRegistryContract::class),
-                templatePath: (is_string($template) && $template !== '') ? $template : null,
+            return new DdlTenantProvisioner(
+                central: $c->make(DatabaseConnectionManagerContract::class)->default(),
+                templatePath: (is_string($template) && $template !== '')
+                    ? $template
+                    : __DIR__ . '/database/tenant-template',
             );
         });
+
+        $container->bind(TenantAdminServiceContract::class, static fn ($c): TenantAdminServiceContract =>
+            new TenantAdminService(
+                store:       $c->make(TenantWriteStore::class),
+                provisioner: $c->make(TenantProvisioner::class),
+                registry:    $c->make(TenantRegistryContract::class),
+                crypto:      $c->make(EncryptionPort::class),
+                identity:    $c->make(\AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity::class),
+            ));
 
         $container->bindInternal(TenantAdminController::class, static fn ($c): TenantAdminController =>
             new TenantAdminController($c->make(TenantAdminServiceContract::class)));
@@ -273,6 +298,11 @@ final class Provider implements ModuleContract
         // queues is still written to the response. All after.load hooks run before
         // the dedicated RouteFilterStage regardless of priority.
         $http->hook('after.load', TenantContextStage::class, priority: 23);
+
+        // Reusable declarative guard: a route that touches tenant-only tables
+        // opts in with "filters": ["auth", "tenant"] to fail clean (409) when no
+        // tenant is active, instead of hitting the central DB and 500-ing.
+        $http->filter('tenant', \Plugins\Tenancy\Infrastructure\Http\Stages\RequireTenantStage::class);
 
         // Assign a self-signup user to their originating tenant. The User plugin
         // emits `user.registered` (via its outbox); the tenant rides on the event

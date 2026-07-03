@@ -151,3 +151,72 @@ if (!function_exists('psp_require_kernel_autoload')) {
         exit(1);
     }
 }
+
+if (!function_exists('psp_kernel_home')) {
+    /**
+     * Resolve the framework KERNEL HOME — the directory that owns the shared
+     * `plugins/` tree — used by the `require`s that the `hkm plugins` tooling
+     * wires into this bootstrap (e.g. a kernel plugin's Support/helpers.php).
+     *
+     * Resolution order:
+     *   1. HKM_KERNEL_HOME env var (set by `hkm run`, the launcher, or the operator)
+     *   2. the $fallback captured when the require was wired (dev-machine path)
+     *   3. derived from the loaded kernel — walk up from the Kernel class file to
+     *      the first ancestor directory that owns a plugins/ tree
+     *
+     * If NONE resolve, the framework is not installed correctly: report clearly
+     * and hard-exit, rather than let a later require_once fatal cryptically with
+     * "failed to open stream".
+     */
+    function psp_kernel_home(?string $fallback = null): string
+    {
+        static $home = null;
+        if ($home !== null) {
+            return $home;
+        }
+
+        // 1. Explicit environment variable — the canonical, relocatable source.
+        $env = getenv('HKM_KERNEL_HOME');
+        if (is_string($env) && $env !== '' && is_dir($env)) {
+            return $home = rtrim($env, "/\\");
+        }
+
+        // 2. Wire-time fallback (the kernel path known when the require was added).
+        if (is_string($fallback) && $fallback !== '' && is_dir($fallback)) {
+            return $home = rtrim($fallback, "/\\");
+        }
+
+        // 3. Derive from the already-loaded kernel package.
+        $kernelClass = \AlfacodeTeam\PhpServicePlatform\Kernel\Kernel::class;
+        if (class_exists($kernelClass)) {
+            $file = (new \ReflectionClass($kernelClass))->getFileName();
+            if (is_string($file) && $file !== '') {
+                $dir = dirname($file);
+                for ($i = 0; $i < 8 && $dir !== dirname($dir); $i++, $dir = dirname($dir)) {
+                    if (is_dir($dir . '/plugins')) {
+                        return $home = $dir;
+                    }
+                }
+            }
+        }
+
+        // Nothing resolved — the framework is not installed correctly.
+        $msg = "[PSP] HKM_KERNEL_HOME is not set and the framework kernel could not be\n"
+            . "located — the framework is not installed correctly.\n"
+            . "Set it to the kernel root, e.g.:\n"
+            . "  export HKM_KERNEL_HOME=/path/to/php-service-platform\n"
+            . (is_string($fallback) && $fallback !== '' ? "(tried wire-time path: {$fallback})\n" : '');
+
+        if (\PHP_SAPI === 'cli' || \PHP_SAPI === 'phpdbg') {
+            fwrite(\defined('STDERR') ? STDERR : fopen('php://stderr', 'w'), $msg);
+        } else {
+            if (!headers_sent()) {
+                http_response_code(500);
+                header('Content-Type: text/plain; charset=utf-8');
+            }
+            echo $msg;
+        }
+
+        exit(1);
+    }
+}

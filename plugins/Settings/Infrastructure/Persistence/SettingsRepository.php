@@ -6,6 +6,7 @@ namespace Plugins\Settings\Infrastructure\Persistence;
 
 use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\RepositoryException;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
+use Plugins\Settings\Domain\Entities\TenantSettings;
 use Plugins\Settings\Domain\ValueObjects\SettingsSection;
 
 /**
@@ -22,18 +23,18 @@ final class SettingsRepository
         private readonly DatabasePort $db,
     ) {}
 
-    /**
-     * @return array<string, mixed>|null
-     */
-    public function fetch(SettingsSection $section, string $tenantId): ?array
+    /** Hydrate the tenant's row for a section as a {@see TenantSettings} entity. */
+    public function fetch(SettingsSection $section, string $tenantId): ?TenantSettings
     {
         $table = $section->table();
 
         try {
-            return $this->db->queryOne(
+            $row = $this->db->queryOne(
                 "SELECT * FROM {$table} WHERE tenant_id = :tid",
                 ['tid' => $tenantId],
             );
+
+            return $row === null ? null : TenantSettings::fromRow($section, $row);
         } catch (\Throwable $e) {
             throw new RepositoryException(
                 "Failed to load settings [{$table}] for tenant [{$tenantId}].",
@@ -45,20 +46,18 @@ final class SettingsRepository
     }
 
     /**
-     * Idempotent upsert keyed on `tenant_id`. `$row` MUST contain `tenant_id`
-     * and use raw column names (JSON columns already encoded).
-     *
-     * @param array<string, mixed> $row
+     * Idempotent upsert keyed on `tenant_id`. The entity carries its target
+     * section and a tenant-scoped row (JSON columns already encoded).
      */
-    public function upsert(SettingsSection $section, array $row): void
+    public function upsert(TenantSettings $settings): void
     {
-        $table = $section->table();
+        $table = $settings->table();
 
         try {
-            $this->db->upsert($table, $row, ['tenant_id']);
+            $this->db->upsert($table, $settings->toRawArray(), ['tenant_id']);
         } catch (\Throwable $e) {
             throw new RepositoryException(
-                "Failed to save settings [{$table}] for tenant [" . ($row['tenant_id'] ?? '?') . '].',
+                "Failed to save settings [{$table}] for tenant [{$settings->tenantId()}].",
                 layer: 'repository.settings',
                 context: ['table' => $table],
                 previous: $e,

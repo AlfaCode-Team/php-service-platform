@@ -200,6 +200,89 @@ pub fn insertIntoArray(allocator: std.mem.Allocator, source: []const u8, marker:
     return try out.toOwnedSlice(allocator);
 }
 
+// ── Support helpers (plugin Support/helpers.php — function files) ──────────────
+//
+// A plugin may ship a `Support/helpers.php` full of global functions. Those are
+// NOT PSR-4 autoloaded (composer only autoloads classes), so enabling the plugin
+// also wires a managed `require_once` into the bootstrap. Each require is tagged
+// with `[psp-support:<Folder>]` so disable can find and remove exactly its line.
+
+pub const support_tag_open = "[psp-support:";
+
+/// The exact managed comment tag for `folder`, e.g. `[psp-support:Cookie]`.
+pub fn supportTag(allocator: std.mem.Allocator, folder: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}{s}]", .{ support_tag_open, folder });
+}
+
+/// Insert a managed `require_once <expr>` for `folder`'s Support/helpers.php after
+/// the autoload call in the bootstrap. `expr` is the PHP expression that follows
+/// `require_once ` (including its trailing `;`). Idempotent — returns the source
+/// unchanged (same slice) when the plugin's require is already present, so callers
+/// can compare pointers to detect a no-op.
+pub fn insertSupportRequire(allocator: std.mem.Allocator, source: []const u8, folder: []const u8, expr: []const u8) ![]const u8 {
+    const tag = try supportTag(allocator, folder);
+    if (std.mem.indexOf(u8, source, tag) != null) return source; // already wired
+
+    const block = try std.fmt.allocPrint(
+        allocator,
+        "\n// {s} Support helpers — managed by `hkm plugins`\nrequire_once {s}",
+        .{ tag, expr },
+    );
+
+    // Anchor after the autoload call; fall back to the strict_types declaration,
+    // else the very top of the file.
+    const anchor = if (std.mem.indexOf(u8, source, "psp_require_kernel_autoload();")) |p|
+        p
+    else if (std.mem.indexOf(u8, source, "declare(strict_types=1);")) |p|
+        p
+    else
+        @as(usize, 0);
+    const at = std.mem.indexOfScalarPos(u8, source, anchor, '\n') orelse source.len;
+
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(allocator, source[0..at]);
+    try out.appendSlice(allocator, block);
+    try out.appendSlice(allocator, source[at..]);
+    return out.toOwnedSlice(allocator);
+}
+
+/// Remove the managed Support-helpers require for `folder`: the tagged comment
+/// line and the `require_once` line immediately below it. A no-op (empty
+/// `removed`) when the plugin has no wired require.
+pub fn removeSupportRequire(allocator: std.mem.Allocator, source: []const u8, folder: []const u8) !RemoveResult {
+    const tag = try supportTag(allocator, folder);
+
+    var lines: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, source, '\n');
+    while (it.next()) |l| try lines.append(allocator, l);
+
+    var drop = try allocator.alloc(bool, lines.items.len);
+    @memset(drop, false);
+
+    for (lines.items, 0..) |l, idx| {
+        if (std.mem.indexOf(u8, l, tag) == null) continue;
+        drop[idx] = true;
+        if (idx + 1 < lines.items.len) {
+            const nt = std.mem.trim(u8, lines.items[idx + 1], " \t\r");
+            if (std.mem.startsWith(u8, nt, "require_once")) drop[idx + 1] = true;
+        }
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    var removed: std.ArrayList([]const u8) = .empty;
+    var first = true;
+    for (lines.items, 0..) |l, idx| {
+        if (drop[idx]) {
+            try removed.append(allocator, l);
+            continue;
+        }
+        if (!first) try out.appendSlice(allocator, "\n");
+        try out.appendSlice(allocator, l);
+        first = false;
+    }
+    return .{ .text = try out.toOwnedSlice(allocator), .removed = try removed.toOwnedSlice(allocator) };
+}
+
 pub const RemoveResult = struct { text: []const u8, removed: []const []const u8 };
 
 /// Remove the array entry whose token is `token`, its preceding contiguous

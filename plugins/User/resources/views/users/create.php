@@ -1,13 +1,13 @@
 <?php
 /**
- * Create-user page (user::users/create). POSTs to /api/users.
+ * Create-user page (user::users/create). POSTs to /ajx/users.
  *
  * @var string $csrf
  */
 ?>
 <div class="card">
     <h2>Create account</h2>
-    <p class="muted">Submits to <code>POST /api/users</code> (rate-limited, public signup).</p>
+    <p class="muted">Submits to <code>POST /ajx/users</code> (rate-limited, public signup).</p>
 
     <form id="create-form" novalidate>
         <input type="hidden" name="_csrf_token" value="<?= htmlspecialchars($csrf ?? '', ENT_QUOTES, 'UTF-8') ?>">

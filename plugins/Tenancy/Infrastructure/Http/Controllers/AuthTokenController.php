@@ -21,7 +21,7 @@ final class AuthTokenController extends ApiController
         private readonly RefreshTokenServiceContract $refreshTokens,
     ) {}
 
-    /** POST /api/auth/refresh  { "token": "…" } */
+    /** POST /ajx/auth/refresh  { "token": "…" } */
     public function refresh(): Response
     {
         $request = $this->resolveRequest();
@@ -39,7 +39,7 @@ final class AuthTokenController extends ApiController
         return $this->ok($rotation->toArray());
     }
 
-    /** POST /api/auth/logout  { "token": "…" } — revoke a single refresh token. */
+    /** POST /ajx/auth/logout  { "token": "…" } — revoke a single refresh token. */
     public function logout(): Response
     {
         $request = $this->resolveRequest();

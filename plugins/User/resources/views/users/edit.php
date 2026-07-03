@@ -1,6 +1,6 @@
 <?php
 /**
- * Edit-user page (user::users/edit). Loads via GET, saves via PUT /api/users/{id}.
+ * Edit-user page (user::users/edit). Loads via GET, saves via PUT /ajx/users/{id}.
  *
  * @var string $userId
  * @var string $csrf

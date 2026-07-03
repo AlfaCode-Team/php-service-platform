@@ -32,7 +32,7 @@ final class RefreshTokenServiceTest extends TestCase
             }
             private function toRecord(array $r): RefreshTokenRecord
             {
-                return new RefreshTokenRecord($r['token_id'], $r['user_id'], $r['tenant_id'], $r['family_id'], $r['revoked']);
+                return RefreshTokenRecord::of($r['token_id'], $r['user_id'], $r['tenant_id'], $r['family_id'], $r['revoked']);
             }
             public function findActiveByHash(string $tokenHash): ?RefreshTokenRecord
             {
@@ -123,7 +123,7 @@ final class RefreshTokenServiceTest extends TestCase
 
     private function seat(string $userId, string $tenantId, string $role = 'member', MembershipStatus $s = MembershipStatus::Active): Membership
     {
-        return new Membership($userId, $tenantId, 'N', 'n', $role, $s, TenantStatus::Active);
+        return Membership::of($userId, $tenantId, 'N', 'n', $role, $s, TenantStatus::Active);
     }
 
     public function test_issue_then_rotate_unscoped(): void

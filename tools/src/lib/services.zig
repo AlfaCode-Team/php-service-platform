@@ -63,6 +63,31 @@ pub fn resolveAutoload(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !?[]c
     return null;
 }
 
+/// Resolve the kernel HOME directory (the kernel root, parent of its `vendor/`).
+///
+/// Order: HKM_KERNEL_HOME (kept) → `<autoload>/../..` when the resolved autoload
+/// looks like `<home>/vendor/autoload.php` → the kernel root inferred from the
+/// registry path (`<kernel>/projects/projects.json`). Returns null when none
+/// apply. Used to export HKM_KERNEL_HOME to child processes so a served app's
+/// runtime `getenv('HKM_KERNEL_HOME')` resolves.
+pub fn resolveKernelHome(allocator: std.mem.Allocator, io: Io, env: *EnvMap, autoload: ?[]const u8) !?[]const u8 {
+    if (env.get("HKM_KERNEL_HOME")) |h| {
+        if (h.len > 0) return util.trimSlash(h);
+    }
+    // <home>/vendor/autoload.php → <home>
+    if (autoload) |a| {
+        if (std.mem.endsWith(u8, a, "/vendor/autoload.php")) {
+            if (util.parentOf(util.parentOf(a))) |home| return home;
+        }
+    }
+    if (try registry.resolvePath(allocator, io, env)) |jsonPath| {
+        if (util.parentOf(util.parentOf(jsonPath))) |kernel_root| {
+            if (util.dirExists(Dir.cwd(), io, kernel_root)) return kernel_root;
+        }
+    }
+    return null;
+}
+
 /// Resolve a directory holding the scaffolding templates, or null.
 /// Probes each candidate for a `proj.json`; HKM_TEMPLATES_DIR is trusted
 /// without the probe so a partial override directory still works.

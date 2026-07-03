@@ -1,6 +1,6 @@
 <?php
 /**
- * User detail page (user::users/show). Loads via GET /api/users/{id}.
+ * User detail page (user::users/show). Loads via GET /ajx/users/{id}.
  *
  * @var string $userId
  */
@@ -45,7 +45,7 @@
             detail.appendChild(row('ID', u.id));
             detail.appendChild(row('Username', u.username));
             detail.appendChild(row('Email', u.email));
-            detail.appendChild(row('Status', u.status));
+            detail.appendChild(row('Email verified', u.emailVerified ? 'yes' : 'no'));
             detail.appendChild(row('Created', new Date(u.createdAt).toLocaleString()));
         } catch (e) {
             detail.textContent = e.message;

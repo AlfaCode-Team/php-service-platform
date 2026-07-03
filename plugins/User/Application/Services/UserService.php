@@ -32,6 +32,7 @@ use Plugins\User\Domain\Events\UserDeletedDomainEvent;
 use Plugins\User\Domain\Events\UserRegisteredDomainEvent;
 use Plugins\User\Domain\Events\UserUpdatedDomainEvent;
 use Plugins\User\Infrastructure\Audit\AuditLogger;
+use Symfony\Component\VarDumper\VarDumper;
 
 /**
  * UserService — orchestrates the user.management domain.
@@ -101,6 +102,7 @@ final class UserService implements UserServiceContract
                 email:        $dto->email,
                 passwordHash: $this->hasher->make($dto->password),
             );
+           
 
             $this->flushEvents($user, $dto->tenantId);
             $this->repository->insert($user);
@@ -112,7 +114,7 @@ final class UserService implements UserServiceContract
         }
 
         $this->collector->release();
-        $this->audit->record('user.registered', ['userId' => $user->id()->value()]);
+        $this->audit->record('user.registered', ['userId' => $user->id()]);
 
         return UserDTO::fromEntity($user);
     }
@@ -137,8 +139,8 @@ final class UserService implements UserServiceContract
             return UserDTO::fromEntity($user);
         }
 
-        $newUsername = $dto->username?->value() ?? $user->username()->value();
-        $newEmail    = $dto->email?->value() ?? $user->email()->value();
+        $newUsername = $dto->username?->value() ?? $user->username();
+        $newEmail    = $dto->email?->value() ?? $user->email();
         if ($this->repository->existsByUsernameOrEmail($newUsername, $newEmail, exceptUserId: $id)) {
             throw new ValidationException(['username' => 'Username or email is already taken.']);
         }
@@ -231,7 +233,7 @@ final class UserService implements UserServiceContract
         $hash = $user?->passwordHash() ?? self::DECOY_HASH;
         $ok   = $this->hasher->check($password, $hash);
 
-        if (!$ok || $user === null || !$user->status()->isActive()) {
+        if (!$ok || $user === null || !$user->canLogin()) {
             $this->recordLoginFailure($identifier);
             $this->audit->record('user.login.failed', ['id' => self::pseudonymise($identifier)]);
             return null;
@@ -242,8 +244,8 @@ final class UserService implements UserServiceContract
         $this->clearLoginFailures($identifier);
         if ($this->hasher->needsRehash($hash)) {
             try {
-                $this->repository->persistRehash($user->id()->value(), $this->hasher->make($password));
-                $this->audit->record('user.password.rehashed', ['userId' => $user->id()->value()]);
+                $this->repository->persistRehash($user->id(), $this->hasher->make($password));
+                $this->audit->record('user.password.rehashed', ['userId' => $user->id()]);
             } catch (\Throwable) {
                 // A rehash failure must never block a valid login.
             }

@@ -22,7 +22,7 @@ final class TenantController extends ApiController
         private readonly MembershipServiceContract $memberships,
     ) {}
 
-    /** GET /api/me/tenants — the tenant picker for the authenticated user. */
+    /** GET /ajx/me/tenants — the tenant picker for the authenticated user. */
     public function mine(): Response
     {
         $identity = $this->identity();
@@ -35,7 +35,7 @@ final class TenantController extends ApiController
         return $this->ok(['data' => array_map(static fn ($t) => $t->toArray(), $tenants)]);
     }
 
-    /** POST /api/tenants/{tenantId}/select — re-mint a tenant-scoped token. */
+    /** POST /ajx/tenants/{tenantId}/select — re-mint a tenant-scoped token. */
     public function select(string $tenantId): Response
     {
         $identity = $this->identity();

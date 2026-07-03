@@ -30,7 +30,7 @@ final class ClientRepository implements ClientStore
             return null;
         }
 
-        return new Client(
+        return Client::of(
             id:           (string) $row['id'],
             name:         (string) $row['name'],
             secretHash:   $row['secret_hash'] !== null && $row['secret_hash'] !== '' ? (string) $row['secret_hash'] : null,
@@ -81,7 +81,7 @@ final class ClientRepository implements ClientStore
             throw new RepositoryException('Failed to list OAuth clients', layer: 'repository.oauth', previous: $e);
         }
 
-        return array_map(fn (array $row): Client => new Client(
+        return array_map(fn (array $row): Client => Client::of(
             id:           (string) $row['id'],
             name:         (string) $row['name'],
             secretHash:   $row['secret_hash'] !== null && $row['secret_hash'] !== '' ? (string) $row['secret_hash'] : null,

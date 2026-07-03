@@ -37,7 +37,7 @@
       "filters": ["auth"] },
     { "method": "POST",   "path": "/ajx/admin/tenants",
       "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@store",
-      "filters": [] },
+      "filters": ["auth"] },
     { "method": "GET",    "path": "/ajx/admin/tenants/{tenantId}",
       "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@show",
       "filters": ["auth"] },

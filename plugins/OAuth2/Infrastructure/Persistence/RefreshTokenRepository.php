@@ -55,7 +55,7 @@ final class RefreshTokenRepository implements RefreshTokenStore
 
         $scopes = json_decode((string) ($row['scopes'] ?? '[]'), true);
 
-        return new RefreshToken(
+        return RefreshToken::of(
             id:        (string) $row['id'],
             familyId:  (string) $row['family_id'],
             clientId:  (string) $row['client_id'],
