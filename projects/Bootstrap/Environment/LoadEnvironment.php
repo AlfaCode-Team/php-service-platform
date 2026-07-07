@@ -247,7 +247,9 @@ final class LoadEnvironment
     {
         $raw = trim($raw);
 
-        if ($raw === '') {
+        // Empty value, or a value that is ENTIRELY an inline comment
+        // (e.g. `KEY=   # note`, which trims to `# note`) → empty string.
+        if ($raw === '' || $raw[0] === '#') {
             return '';
         }
 

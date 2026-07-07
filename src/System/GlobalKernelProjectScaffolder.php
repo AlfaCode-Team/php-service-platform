@@ -432,7 +432,10 @@ return Kernel::configure()
         CachePort::class => new InMemoryCache(),
     ])
     ->withSecurity([
-        new CsrfTokenLayer(exemptPaths: ['/api']),
+        new CsrfTokenLayer(
+            bindCookie:  env('SESSION_COOKIE') ?: 'hkm_session',
+            exemptPaths: ['/api'],
+        ),
     ]);
 PHP;
     }
@@ -820,7 +823,12 @@ final class NullDatabase implements DatabasePort
         return 0;
     }
 
-    public function lastInsertId(): string
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int
+    {
+        return 0;
+    }
+
+    public function lastInsertId(?string $sequence = null): string
     {
         return '0';
     }

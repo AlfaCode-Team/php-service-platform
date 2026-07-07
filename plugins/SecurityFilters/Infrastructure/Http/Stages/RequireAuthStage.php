@@ -34,7 +34,12 @@ final class RequireAuthStage implements HttpStageContract
 {
     public function handle(Request $request, callable $next): Response
     {
-        if (!$this->isProtected($request->path())) {
+        // Enforce when EITHER the path is in AUTH_PROTECTED_PATHS (global hook
+        // mode) OR the matched route declared the "auth" filter (declarative
+        // mode — module.json / proj.json "filters": ["auth"]).
+        $declared = in_array('auth', (array) $request->attribute('active_filters'), true);
+
+        if (!$declared && !$this->isProtected($request->path())) {
             return $next($request);
         }
 

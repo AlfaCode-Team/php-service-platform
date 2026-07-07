@@ -51,19 +51,23 @@ final class Provider implements ModuleContract
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
     {
-        // CORS first: answers preflight (OPTIONS) before auth so it is never rejected.
+        // ── GLOBAL hooks — always-on, every request/response ─────────────────
+        // These genuinely apply to ALL traffic, so they stay global (not route
+        // filters). CORS first: answers preflight (OPTIONS) before auth so it is
+        // never rejected. SecureHeaders decorates every outgoing response.
         $http->hook('after.security', CorsStage::class, priority: 10);
-        // HMAC signing + auth/authorization run before modules load (cheap rejects).
-        $http->hook('after.security', HmacSignedStage::class, priority: 11);
-        // Require authentication on specific paths (AUTH_PROTECTED_PATHS).
-        $http->hook('after.security', RequireAuthStage::class, priority: 13);
-        $http->hook('after.security', ShieldStage::class, priority: 15);
+        $http->hook('after.execute',  SecureHeadersStage::class, priority: 90);
 
-        // Rate limiter runs after load so it can resolve CachePort from the
-        // request-scoped ModuleContainer.
-        $http->hook('after.load', ApiRateLimitStage::class, priority: 12);
-
-        // Security response headers decorate the outgoing response last.
-        $http->hook('after.execute', SecureHeadersStage::class, priority: 90);
+        // ── DECLARATIVE route filters — opt-in per route ─────────────────────
+        // Routes name these in module.json / proj.json:
+        //   "filters": ["auth", "throttle:60,1"]
+        // They are NOT also registered as global hooks — a stage runs through
+        // exactly ONE mechanism, so e.g. the rate limiter never double-counts.
+        // (Stages keep their internal env gate — RATE_LIMIT_PREFIX etc. — which
+        // now scopes WITHIN a route that opted in.)
+        $http->filter('auth',     RequireAuthStage::class);
+        $http->filter('throttle', ApiRateLimitStage::class);
+        $http->filter('hmac',     HmacSignedStage::class);
+        $http->filter('shield',   ShieldStage::class);
     }
 }

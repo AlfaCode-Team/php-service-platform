@@ -67,8 +67,15 @@
         },
         "files": [
             "src/Kernel/Support/helpers.php",
-            "plugins/SocialAuth/Socialite/Support/helpers.php",
-            "plugins/Support/helpers.php"
+            "plugins/I18n/Support/helpers.php",
+            "plugins/Auth/Support/helpers.php",
+            "plugins/Cookie/Support/helpers.php",
+            "plugins/Pageflow/Support/helpers.php"
+        ],
+        "exclude-from-classmap": [
+            "**/database/seeders/**",
+            "**/database/migrations/**",
+            "**/database/factories/**"
         ]
     },
     "bin": [

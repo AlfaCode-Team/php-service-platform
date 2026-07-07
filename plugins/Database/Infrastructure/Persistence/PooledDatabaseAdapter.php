@@ -55,6 +55,11 @@ final class PooledDatabaseAdapter implements DatabasePort
         return $this->connection()->execute($sql, $params);
     }
 
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int
+    {
+        return $this->connection()->upsert($table, $values, $conflictColumns, $updateColumns);
+    }
+
     public function lastInsertId(?string $sequence = null): string
     {
         return $this->connection()->lastInsertId($sequence);

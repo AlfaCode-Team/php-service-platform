@@ -64,6 +64,22 @@ final class ModuleContainer extends Container
     }
 
     /**
+     * Bind a pre-built instance directly — shared for the rest of the request.
+     *
+     * Mirrors CoreContainer::instance() but threads the current scope so the
+     * resolver's bindingScope branch reaches the stored object (a plain store()
+     * is unreachable for an interface abstract, which is never class_exists()).
+     * Used to override a port for one request — e.g. rebinding DatabasePort to a
+     * tenant connection in an after.load stage.
+     */
+    public function instance(string $abstract, object $instance): void
+    {
+        $this->bindingScope[$abstract] = $this->scope;
+        $this->internal[$abstract]     = false;
+        $this->store($abstract, $instance);
+    }
+
+    /**
      * Bind an INTERNAL binding — only resolvable from within the owning scope.
      * Resolving from any other scope throws ScopeViolationException. Internal
      * bindings are singletons within the request.
