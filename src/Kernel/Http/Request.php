@@ -43,13 +43,13 @@ final class Request extends SymfonyRequest
         // input() don't diverge after a with*/merge/replace.
         $jsonAliasedToRequest = $this->json !== null && $this->json === $this->request;
 
-        $this->query      = clone $this->query;
-        $this->request    = clone $this->request;
+        $this->query = clone $this->query;
+        $this->request = clone $this->request;
         $this->attributes = clone $this->attributes;
-        $this->cookies    = clone $this->cookies;
-        $this->files      = clone $this->files;
-        $this->server     = clone $this->server;
-        $this->headers    = clone $this->headers;
+        $this->cookies = clone $this->cookies;
+        $this->files = clone $this->files;
+        $this->server = clone $this->server;
+        $this->headers = clone $this->headers;
 
         if ($this->json !== null) {
             $this->json = $jsonAliasedToRequest ? $this->request : clone $this->json;
@@ -305,7 +305,7 @@ final class Request extends SymfonyRequest
 
     public function missing(string $key): bool
     {
-        return ! $this->has($key);
+        return !$this->has($key);
     }
 
     public function boolean(string $key, bool $default = false): bool
@@ -466,6 +466,7 @@ final class Request extends SymfonyRequest
         return $this->headers->get('Content-Type');
     }
 
+
     /** Extract a Bearer token from the Authorization header (no global lookups). */
     public function bearerToken(): ?string
     {
@@ -487,7 +488,7 @@ final class Request extends SymfonyRequest
     {
         return array_values(array_filter(
             explode('/', $this->decodedPath()),
-            static fn ($s): bool => $s !== '',
+            static fn($s): bool => $s !== '',
         ));
     }
 

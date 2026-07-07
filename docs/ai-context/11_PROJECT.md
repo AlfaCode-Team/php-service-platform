@@ -125,9 +125,76 @@ Applied to:
 
 ---
 
+## Project Routes & Views (Project-Over-Plugin Priority)
+
+A project can declare its OWN routes and view paths — they take precedence over
+plugin resources by default (deterministic, compiled at boot).
+
+```jsonc
+// projects/<name>/proj.json  (or the flat project-root proj.json)
+{
+  "name": "shop",
+  "views": "resources",                                  // project view root (priority 0)
+  "routes": [
+    { "method": "GET", "path": "/",     "handler": "Shop\\Http\\HomeController@index" },
+    { "method": "GET", "path": "/ping", "handler": "Shop\\Http\\HomeController@ping"  }
+  ]
+}
+```
+
+- Routes: `EntryHelpers::projectRoutes($projectPath)` reads `proj.json`
+  `routes[]`; the project bootstrap passes them to `Kernel::withRoutes(...)`.
+  They compile AFTER all plugin routes and OVERRIDE a plugin route with the same
+  `METHOD path`. They resolve under the synthetic `__project__` scope (no module
+  graph); the full-class-path controller autowires from the request container.
+  Keep project controllers thin — orchestrate published plugin contracts.
+- Views: project view paths sort to priority `0` (highest). `render('welcome')`
+  resolves the project copy before any plugin's; `render('plugin::view')` can be
+  overridden by dropping `{project-views}/plugin/view.php`.
+
+### Per-route `requires` — project routes opting into plugins
+
+The `__project__` scope has an EMPTY dependency graph, so a project route loads
+NO plugins by default: on-demand modules' `register()` never runs, their published
+contracts are unbound, and a `ViewController` (which constructor-injects
+`ViewRendererContract`) cannot even be built. To pull a plugin into ONE project
+route without making it essential, declare a route-level `requires[]`:
+
+```jsonc
+// proj.json
+{ "method": "GET", "path": "/dashboard",
+  "handler": "Shop\\Http\\DashboardController@index",
+  "requires": ["view.rendering"] }
+```
+
+- `CompileRouteManifestStage` validates each `requires[]` entry at BOOT against
+  the set of domains some module `solves()` — an unknown/typo'd domain fails the
+  build with a descriptive message (never a request-time 500).
+- `LoadStage` reads the matched route's `requires[]` and seeds those domains
+  (plus their transitive `requires`) into THAT request's graph only, via
+  `DependencyGraphCalculator::resolve($service, $additional)`. Routes without
+  `requires[]` stay lean.
+- Scope isolation is unchanged: the required plugin's PUBLIC contract resolves in
+  the project controller, but its `bindInternal` bindings still throw
+  `ScopeViolationException` cross-scope.
+
+| Need | Mechanism |
+| --- | --- |
+| Some project routes need a plugin | route-level `requires[]` in `proj.json` |
+| Every request needs a plugin | `withEssentialModules([...])` |
+| The endpoint IS the plugin's domain | declare the route in the plugin's `module.json` |
+
+Project routes also pass `filters[]` through to the compiler; plugin routes MAY
+carry `requires[]` too (they normally get deps via their module's `solves` graph).
+
+See "RESOURCE RESOLUTION" in CLAUDE.md for the complete model.
+
+---
+
 ## Rules For Future Project Work
 
 - Keep business logic out of `app/`, `bootstrap/`, and project bootstrap files
+- Project routes go in `proj.json` routes[] (or `Kernel::withRoutes()`), never in PHP
 - Put only port/adapters/security/module lists in bootstrap wiring
 - Add new projects under `projects/{name}/bootstrap/app.php`
 - Ensure module classes listed in `withModules()` have valid `module.json`

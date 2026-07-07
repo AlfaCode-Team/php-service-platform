@@ -75,6 +75,14 @@ final class OnDemandLoader
         foreach ($graph->moduleNames() as $domain) {
             $entry         = $graph->entry($domain);
             $providerClass = $entry['module'] ?? null;
+
+            // A scope with no module provider (e.g. the synthetic '__project__'
+            // scope backing project-layer routes) contributes only its scope —
+            // there is nothing to register. The controller autowires directly.
+            if ($providerClass === null && array_key_exists('module', $entry)) {
+                continue;
+            }
+
             if ($providerClass === null || !class_exists($providerClass)) {
                 throw new KernelException(
                     "Module provider for [{$domain}] could not be loaded.",

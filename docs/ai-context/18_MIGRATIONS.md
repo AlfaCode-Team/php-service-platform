@@ -170,11 +170,19 @@ The scaffolder:
 $t->id();                              // BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT
 $t->tinyInteger('x');                  // TINYINT
 $t->smallInteger('x');                 // SMALLINT
+$t->mediumInteger('x');                // MEDIUMINT (→ INT on non-MySQL)
 $t->integer('x');                      // INT
 $t->bigInteger('x');                   // BIGINT
 $t->decimal('price', 8, 2);            // DECIMAL(8,2)
 $t->float('rate');                     // FLOAT
 $t->double('score');                   // DOUBLE
+
+// Unsigned shorthands (equivalent to ->unsigned() on the base type)
+$t->unsignedTinyInteger('x');          // TINYINT UNSIGNED
+$t->unsignedSmallInteger('x');         // SMALLINT UNSIGNED
+$t->unsignedMediumInteger('x');        // MEDIUMINT UNSIGNED
+$t->unsignedInteger('x');              // INT UNSIGNED
+$t->unsignedBigInteger('x');           // BIGINT UNSIGNED
 ```
 
 ### String Columns
@@ -308,6 +316,50 @@ $schema->create('posts', static function (Blueprint $t): void {
         ->on('users')
         ->cascadeOnDelete();
     $t->timestamps();
+});
+```
+
+### Table Options (MySQL)
+
+Chainable table-level options on the Blueprint. These are emitted **only** by the
+MySQL grammar — PostgreSQL, SQLite, and SQL Server ignore them (their grammars
+override `compileTableOptions()` to return an empty string), so the same migration
+stays portable.
+
+```php
+$schema->create('users', static function (Blueprint $t): void {
+    $t->id();
+    $t->string('email');
+
+    $t->engine('InnoDB');                 // ENGINE=InnoDB              (default)
+    $t->charset('utf8mb4');               // DEFAULT CHARSET=utf8mb4    (default)
+    $t->collation('utf8mb4_0900_ai_ci');  // COLLATE=…                  (default utf8mb4_unicode_ci)
+    $t->rowFormat('DYNAMIC');             // ROW_FORMAT=DYNAMIC
+    $t->comment('Core project registry'); // COMMENT='…' (table-level)
+});
+```
+
+`rowFormat()` accepts `DYNAMIC` | `COMPACT` | `COMPRESSED` | `REDUNDANT` | `FIXED`
+(case-insensitive — normalised to upper-case). Omit it to let MySQL choose the
+engine default. `comment()` sets the MySQL table-level `COMMENT='…'`.
+
+### CHECK Constraints (portable)
+
+`check()` adds a table-level CHECK constraint, emitted inline in the CREATE TABLE
+body. Unlike table options, this is **portable across every driver** — MySQL
+8.0.16+/MariaDB 10.2+, PostgreSQL, SQLite, and SQL Server all support inline
+CHECK. Pass a raw boolean SQL expression using **unquoted** column names so it
+stays dialect-neutral, plus an optional constraint name.
+
+```php
+$schema->create('projects', static function (Blueprint $t): void {
+    $t->id('project_id');
+    $t->tinyInteger('status')->unsigned()->default(1);
+    $t->tinyInteger('visibility')->unsigned()->default(4);
+
+    $t->check('status between 1 and 3', 'chk_status');       // CONSTRAINT chk_status CHECK (...)
+    $t->check('visibility between 4 and 19', 'chk_visibility');
+    $t->check('type between 0 and 5');                        // anonymous CHECK (name auto-assigned by DB)
 });
 ```
 
@@ -677,6 +729,8 @@ $engine = LetMigrate::configure([
 - `AUTO_INCREMENT`, `FOREIGN KEY … ON DELETE CASCADE`
 - `ON UPDATE CURRENT_TIMESTAMP` supported inline
 - Column positioning: `->after('col')`, `->first()`
+- Table options: `->engine()`, `->charset()`, `->collation()`, `->rowFormat('DYNAMIC')`, `->comment('…')` (MySQL-only)
+- CHECK constraints via `->check('expr', 'name')` are portable (inline in CREATE TABLE) on all four drivers
 
 ### PostgreSQL
 

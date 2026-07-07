@@ -124,12 +124,64 @@ All service-level authorization uses `$this->identity->hasPermission()` or `->ha
 // Returns: X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After headers
 ```
 
-### TokenValidatorLayer
+### CsrfTokenLayer
+
+```php
+// Stateless HMAC-signed CSRF token (the WordPress-nonce model) — NOT plain
+// double-submit. No token is stored and NO cookie value is trusted as the
+// token; a valid token cannot be forged without APP_KEY, so cookie injection
+// (sibling sub-domain / MITM) cannot bypass it.
+//
+//   token = tick . "." . hmac(APP_KEY, tick|binding|action)
+//
+// Safe methods (GET/HEAD/OPTIONS) + exemptPaths bypass; an empty APP_KEY
+// fail-closes (denies). lifetime is in SECONDS (default 43200 = 12h).
+// Mint with CsrfTokenLayer::make(), verify out-of-band with ::valid().
+//
+// Full guide + framework-level usage: docs/ai-context/21_CSRF.md
+new CsrfTokenLayer(
+    headerName:  'X-CSRF-Token',
+    formField:   '_csrf_token',
+    bindCookie:  'hkm_session',   // pin to the HttpOnly session cookie ('' = unbound)
+    lifetime:    43200,           // seconds
+    exemptPaths: ['/api'],        // machine-to-machine endpoints with their own auth
+);
+```
+
+### TokenValidatorLayer (project-provided — Auth module)
+
 ```php
 // Validates JWT or API key. Builds Identity from claims.
 // Routes in config("security.public_routes") bypass this layer.
 // HMAC signature verification — timing-safe hash_equals()
+// NOTE: the kernel ships NO JWT code — an Auth module registers this layer.
 ```
+
+### Tenant context on the Identity (`tnt` claim — multi-tenant control plane)
+
+`Identity.tenantId` carries the authenticated tenant for database-per-tenant
+routing. `Plugins\Auth\Security\JwtAuthLayer` reads it from the signed **`tnt`**
+claim (legacy `tenant` accepted for BC) and defaults it to **`''` (empty)**:
+
+```php
+$tenant = (string) ($claims['tnt'] ?? $claims['tenant'] ?? '');
+$identity = new Identity(userId: $claims['sub'], tenantId: $tenant, /* … */);
+```
+
+- **Empty tenant = UNSCOPED.** Login, the tenant picker, and public pages keep
+  the central connection. `AuthService::issueJwt()` mints NO tenant at login.
+- **Non-empty tenant** is routed to its isolated database by
+  `Plugins\Tenancy`'s `TenantContextStage` (hooked `after.load`), which rebinds
+  `DatabasePort` in the request container. Mint a tenant-scoped token ONLY after
+  the user selects a tenant and membership is verified against the central
+  `user_tenants` table; re-check membership each request so a revoked seat loses
+  access before the token expires.
+- **Control-plane plugins pin to central.** `Plugins\User` (the global `users`
+  identity table) and `Plugins\Auth` (`personal_access_tokens`) resolve the
+  `DatabaseConnectionManagerContract` **default** connection, NOT the per-request
+  (tenant-rebound) `DatabasePort` — so identity I/O never lands in a tenant DB.
+  Because the `tnt` claim is signed it cannot be forged, but it is still a hint,
+  not authority: authorization keys on `(userId, tenantId, role/permission)`.
 
 ---
 

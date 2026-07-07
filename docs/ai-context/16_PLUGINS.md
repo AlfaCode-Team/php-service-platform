@@ -71,6 +71,13 @@ Because handlers are in the `Plugins\` namespace, use the fully-qualified class 
 }
 ```
 
+A route entry may also carry `filters[]` (auth, throttle, …) and an optional
+`requires[]` of extra module domains. A plugin route normally gets its deps via
+its own `solves` graph, so `requires[]` is rarely needed here — it is the primary
+mechanism for PROJECT routes (whose `__project__` scope has no graph); see
+[11_PROJECT.md](11_PROJECT.md) "Per-route `requires`". Either way, every
+`requires[]` domain is validated at BOOT — an unknown domain fails the build.
+
 ---
 
 ## Registering a Plugin
@@ -106,10 +113,41 @@ of `CLAUDE.md` for on-demand vs essential:
 |---|---|---|---|
 | Storage | `storage.local` | `StoragePort` (local + S3) | on-demand |
 | HttpClient | `http.client` | `HttpClientPort` (cURL) | on-demand |
-| Session | `session.management` | `SessionPort` | essential |
+| Session | `session.management` | `SessionPort` (file/array/cookie drivers) | essential |
 | Cookie | `http.cookies` | `CookieJar` + flush stage | essential |
 | RedisCache | `cache.redis` | `CachePort` + `QueuePort` | essential |
-| SecurityFilters | `http.security_filters` | CORS / SecureHeaders / HMAC / auth / rate-limit stages | always-hooked |
+| SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
+| Tenancy | `tenancy.routing` | `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` (database-per-tenant routing + selection/invitation flows; refresh tokens now in `Plugins\Auth`; `requires: ["database.management","auth.identity","user.management"]`) | essential |
+
+---
+
+## Plugin Views — Project-First Cascade + Namespacing
+
+A plugin may ship its own templates and register them via a `views` key in
+`module.json`. `CompileViewManifestStage` folds every plugin's `views` plus the
+project's `proj.json` `views` into `view-manifest.php`, which the View plugin's
+renderer consumes.
+
+```jsonc
+// plugins/Task/module.json
+"views": "resources/views"                                   // namespace defaults to "task"
+"views": { "path": "resources/views", "namespace": "task",
+           "priority": 100, "global": true }                 // explicit form
+```
+
+Resolution is DETERMINISTIC — lower `priority` wins:
+
+- PROJECT view paths default to priority `0` (highest) → a project view
+  overrides a plugin view of the same name BY DEFAULT.
+- PLUGIN view paths default to priority `100` → fallbacks.
+- `render('welcome')` walks the global cascade (project first).
+- `render('task::welcome')` targets the `task` namespace, but the project can
+  override it by placing `{project-views}/task/welcome.php` (checked first).
+- A plugin may preempt the project ONLY with an explicit lower priority
+  (e.g. `"priority": -1`). `"global": false` exposes a source under its
+  namespace only (collision-proof).
+
+See the "RESOURCE RESOLUTION" section in CLAUDE.md for the full model.
 
 ---
 
@@ -117,6 +155,8 @@ of `CLAUDE.md` for on-demand vs essential:
 
 ```
 ✓ plugins/{Name}/  →  Plugins\{Name}\  (PascalCase folder = PascalCase namespace)
+✓ Project resources (routes/views) override plugin resources by default — deterministic
+✓ Use namespace::view to target a plugin view and to avoid cross-plugin name collisions
 ✓ module.json handlers use fully-qualified Plugins\... class strings
 ✓ Provider registered in projects/{project}/bootstrap/app.php
 ✗ Do NOT place plugin files under projects/ — that folder is for wiring only

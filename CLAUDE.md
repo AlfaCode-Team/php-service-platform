@@ -23,15 +23,22 @@ Every suggestion must follow the AlfacodeTeam PhpServicePlatform rules in this f
 
 This repository supports OS-native distribution through GitHub Releases.
 
-- Release workflow: `.github/workflows/release.yml`
+- Release workflow: `.github/workflows/release.yml` (each OS job calls `tools/bundle.sh <os>`)
+- Local bundling: `tools/bundle.sh [linux|macos|windows|all]` → writes to `dist/`
 - Trigger: push a tag matching `v*` (example: `v1.0.0`)
 - Artifacts:
-    - Linux: `psp-kernel_<version>_amd64.deb`
-    - Windows: `psp-kernel-<version>-windows-x86_64.zip`
-    - macOS: `psp-kernel-<version>-macos-universal.tar.gz`
+    - Linux: `hkm-kernel_<version>_amd64.deb`  → installs `/opt/hkm-kernel` + `/usr/bin/hkm`
+    - Windows: `hkm-kernel-<version>-windows-x86_64.zip`
+    - macOS: `hkm-kernel-<version>-macos-universal.tar.gz` (`HKM.app`)
 
-Launcher/config binaries are built from `tools/psp-launcher-zig/`.
-Use pinned Zig version from `tools/psp-launcher-zig/.zig-version`.
+The native launcher (`hkm`) + `hkm-config` are built from `tools/` (`tools/build.zig`,
+source in `tools/src/`). Use the pinned Zig version from `tools/.zig-version`
+(`0.17.0-dev.657+2faf8debf`). The kernel PHP CLI (`bin/psp`) is installed inside the
+bundle as `<kernel>/bin/hkm` so the launcher's default passthrough path resolves.
+
+End users still need PHP >= 8.2 with the required extensions — run `hkm doctor` to
+verify (checks PHP version, required extensions json/mbstring/ctype/tokenizer/filter/
+pdo/openssl/curl/fileinfo, a PDO driver, and reports optional redis/swoole/gd/intl).
 
 ---
 
@@ -95,17 +102,18 @@ sentinel/kernel/
     │   └── ModuleContract.php             ← solves, requires, exposes, register, boot
     │
     ├── Boot/
-    │   ├── BootPipeline.php               ← 9 stages, fail-fast
+    │   ├── BootPipeline.php               ← 10 stages, fail-fast
     │   └── Stages/
     │       ├── ValidateConfigStage           ← 1. all env vars present + typed
     │       ├── DetectConflictsStage          ← 2. no shared solves() domain
     │       ├── DetectCyclesStage             ← 3. no circular requires[]
-    │       ├── CompileServiceManifestStage   ← 4. services[] → service-manifest.php
-    │       ├── CompileRouteManifestStage     ← 5. routes[] → route-manifest.php (validates Controller@method format)
-    │       ├── CompileJobManifestStage       ← 6. jobs → job-manifest.php (with solves domain)
-    │       ├── CompileCommandManifestStage   ← 7. commands → command-manifest.php
-    │       ├── RegisterPortsStage            ← 8. verify port bindings
-    │       └── BindSecurityStage             ← 9. verify security layers
+    │       ├── CompileServiceManifestStage   ← 4. services[] → service-manifest.php (+ synthetic __project__ scope)
+    │       ├── CompileRouteManifestStage     ← 5. routes[] → route-manifest.php (plugin + project routes; project OVERRIDES)
+    │       ├── CompileViewManifestStage      ← 6. views[] → view-manifest.php (project-first cascade + namespaces)
+    │       ├── CompileJobManifestStage       ← 7. jobs → job-manifest.php (with solves domain)
+    │       ├── CompileCommandManifestStage   ← 8. commands → command-manifest.php
+    │       ├── RegisterPortsStage            ← 9. verify port bindings
+    │       └── BindSecurityStage             ← 10. verify security layers
     │
     ├── Security/
     │   ├── SecurityGateway.php            ← runs before ANY module loads
@@ -115,7 +123,7 @@ sentinel/kernel/
     │   └── Layers/
     │       ├── FirewallLayer.php          ← IP blocklist/allowlist (cheapest — runs first)
     │       ├── RateLimiterLayer.php       ← sliding window counter via CachePort
-    │       └── CsrfTokenLayer.php         ← stateless double-submit cookie CSRF check
+    │       └── CsrfTokenLayer.php         ← stateless HMAC-signed token CSRF check (WordPress-nonce style)
     │
     │   (JWT / API-key / session authentication is provided by a project's
     │    Auth module — the kernel does not ship a token validator.)
@@ -123,7 +131,7 @@ sentinel/kernel/
     ├── Loading/
     │   ├── DependencyGraphCalculator.php  ← DFS over service-manifest.php
     │   ├── DependencyGraph.php            ← ordered module list
-    │   └── OnDemandLoader.php             ← register() then boot() per module
+    │   └── OnDemandLoader.php             ← register() per request (boot() runs once at materialize, not here)
     │
     ├── Container/
     │   ├── CoreContainer.php              ← app-lifetime: ports + kernel services
@@ -417,11 +425,21 @@ return Kernel::configure()
     ->withSecurity([
         new FirewallLayer(blocklist: config('security.blocklist')),            // 1st — cheapest
         new RateLimiterLayer(store: CachePort::class, limits: config('security.limits')), // 2nd
-        new CsrfTokenLayer(                                                   // 3rd — stateless
-            cookieName:   'XSRF-TOKEN',
+        new CsrfTokenLayer(                                  // 3rd — stateless HMAC token (WP-nonce style)
+            // secret:    null,           // defaults to env('APP_KEY'); empty = fail-closed (deny)
             headerName:   'X-CSRF-Token',
-            exemptPaths:  config('security.csrf_exempt'),  // e.g. ['/api/webhooks']
+            formField:    '_csrf_token',
+            bindCookie:   'hkm_session',  // pin token to this HttpOnly cookie's raw value ('' = unbound)
+                                          // bound cookie MUST be in Cookie's encrypt_exempt — the layer
+                                          // reads the RAW header at SecurityStage (CookieJar decrypt not
+                                          // loaded yet); encryption rotates ciphertext → binding breaks
+            lifetime:     43200,          // SECONDS (12h); make()/valid() lifetime MUST match this
+            exemptPaths:  config('security.csrf_exempt'),  // e.g. ['/api', '/api/webhooks']
         ),
+        // CSRF here is HMAC-signed, NOT plain double-submit: nothing is stored and
+        // no cookie value is trusted as the token, so cookie-injection cannot bypass
+        // it. Mint with CsrfTokenLayer::make(), verify out-of-band with ::valid().
+        // Full guide: docs/ai-context/21_CSRF.md
         // Token/JWT verification: provide via your AuthModule (Provider::boot()
         // registers a layer hook). The kernel intentionally ships no JWT code.
     ])
@@ -537,8 +555,10 @@ one PSR-4 line per project. Decision matrix:
 | `plugins/` | Reusable business modules (full GDA, `Plugins\` namespace) |
 | `projects/<name>/src/` | Logic for ONE project only — not reusable elsewhere |
 
-Routes still live ONLY in a plugin's `module.json` — never in project `src/`.
-Wire anything in project `src/` through that project's `bootstrap/app.php`.
+Plugin routes live in a plugin's `module.json`. A project may ALSO declare its
+own routes in `proj.json` (or via `Kernel::withRoutes()`) — see "RESOURCE
+RESOLUTION" below. Never define routes in PHP files. Wire anything in project
+`src/` through that project's `bootstrap/app.php`.
 
 #### Project `app/` — project-local entry points (standalone deploy)
 
@@ -845,7 +865,10 @@ interface ModuleContract
 
 Rules:
 
-- Routes are declared HERE ONLY — never in PHP files
+- Plugin routes are declared HERE ONLY — never in PHP files (projects declare
+  their own routes in `proj.json`; see "RESOURCE RESOLUTION")
+- A plugin may declare `views` here (string/object/list) to register its view
+  paths + namespace into the project-first cascade — see "RESOURCE RESOLUTION"
 - Every env var the module reads MUST be in `config[]` or boot fails
 - Cross-module access: inject published contract from `API/Contracts/` — never import internals
 
@@ -923,6 +946,19 @@ Request → FirewallLayer → RateLimiterLayer → CsrfTokenLayer → [AuthModul
           ZERO module cost at every denial
 ```
 
+**Multi-tenant tenant context (`Identity.tenantId`):** the Auth module's
+`JwtAuthLayer` reads tenant from the signed **`tnt`** claim (legacy `tenant`
+accepted), defaulting to **`''` (empty = unscoped → central connection)**. A
+non-empty tenant is routed to its isolated database by `Plugins\Tenancy`'s
+`TenantContextStage` (`after.load`), which rebinds `DatabasePort` for that
+request. Mint a tenant-scoped token ONLY after verifying membership in the
+central `user_tenants` table; re-check each request so a revoked seat loses
+access before expiry. Control-plane plugins (`Plugins\User`, `Plugins\Auth`) pin
+to the `ConnectionManager` **default** (central) connection so identity I/O is
+never redirected to a tenant DB. The signed `tnt` claim is a hint, not authority —
+authorization still keys on `(userId, tenantId, role/permission)`. Full design:
+`docs/ai-context/09_SECURITY.md` + the Tenancy plugin README.
+
 ```php
 interface SecurityLayerContract
 {
@@ -962,9 +998,10 @@ final readonly class Identity
 1. CorrelationIdStage     generate/propagate X-Correlation-ID
 2. SecurityStage          run SecurityGateway, attach Identity on clear
    ↳ after.security hooks module-registered stages here
-3. ResolveStage           route-manifest.php lookup → service name
+3. ResolveStage           route-manifest.php lookup → service name (attaches route_entry)
 4. LoadStage              dep graph calc → OnDemandLoader → ModuleContainer
    ↳ after.load hooks     module-registered stages here
+   ↳ RouteFilterStage     runs the matched route's declared filters[] (auth, throttle, …)
 5. ExecuteStage           service contract → DTO → controller → Response
    ↳ after.execute hooks  module-registered stages here
 6. ErrorStage (wraps all) catches ALL Throwables → ErrorPipeline → HTTP response
@@ -987,6 +1024,55 @@ public function boot(HttpPipeline $http, ...): void
     $http->hook('after.load',     LocaleResolverStage::class, priority: 40);
     $http->hook('after.execute',  SecurityHeadersStage::class, priority: 90);
 }
+```
+
+### TWO WAYS A STAGE RUNS — GLOBAL HOOK vs DECLARATIVE ROUTE FILTER
+
+A stage (`HttpStageContract`) is wired through EXACTLY ONE mechanism — NEVER
+both. Registering the same stage as a global hook AND a route filter makes it run
+twice per request (e.g. a rate limiter would double-count).
+
+| Aspect | Global hook | Declarative route filter |
+|---|---|---|
+| Register | `$http->hook(slot, Stage::class, priority)` | `$http->filter('alias', Stage::class)` |
+| Runs on | EVERY request (stage self-gates internally) | ONLY routes that name the alias |
+| Declared in | the registering plugin's `boot()` | the route's `filters[]` (module.json / proj.json) |
+| Use for | always-on cross-cutting (CORS, SecureHeaders) | opt-in per route (auth, throttle, hmac, shield) |
+
+A route opts into filters by name; they are compiled into the route manifest by
+`CompileRouteManifestStage` and run by `RouteFilterStage` (at the after.load
+position). `"alias:arg1,arg2"` passes args.
+
+```jsonc
+// module.json / proj.json route entry — string or list
+{ "method": "POST", "path": "/api/tasks", "handler": "...@create",
+  "filters": ["auth", "throttle:60,1"] }
+```
+
+ANY plugin publishes filter aliases from its `boot()` — the alias registry
+(`FilterRegistry`) is shared, not owned by SecurityFilters:
+
+```php
+public function boot(HttpPipeline $http, ...): void
+{
+    $http->filter('json', RequireJsonStage::class);   // route opts in via "filters": ["json"]
+}
+```
+
+`RouteFilterStage` reads the matched route's `filters[]` from the `route_entry`
+attribute, resolves each alias to a stage instance (from `CoreContainer` when
+bound, else `new`), and runs them as a NESTED onion around `$next` — so the usual
+before/after semantics hold and filters run left-to-right in declaration order.
+It exposes `active_filters` (alias list) + `filter_args` (parsed `:args`) as
+request attributes so a stage can detect declarative invocation and read its
+per-route config. A `RequireAuthStage` thus enforces when EITHER the path is in
+`AUTH_PROTECTED_PATHS` (global) OR the route declared the `auth` filter.
+
+```
+✗ Registering the SAME stage as BOTH a global hook AND a route filter — runs twice
+✗ Naming a filter alias in a route that no Provider::boot() registered — request-time throw
+✗ Defining route filters anywhere but the route's filters[] in module.json / proj.json
+✗ Two plugins binding the SAME alias to DIFFERENT stage classes — FilterRegistry throws
 ```
 
 ---
@@ -1308,6 +1394,70 @@ final class InvoiceController
 }
 ```
 
+### Base controllers (project layer — `Project\Http\Controllers\`)
+
+Optional base classes in `projects/Http/Controllers/` (namespace `Project\`).
+Project layer, NOT kernel — view rendering + cookies are plugin concerns.
+
+- `ApiController` — JSON helpers (`ok`, `created`, `noContent`, `paginated`,
+  `okOrNotFound`, `notFound`, `forbidden`, `unprocessable`, `identity`). Pure
+  kernel types, zero plugin coupling.
+- `ViewController` — HTML helpers (`view`, `viewNotFound`, `redirect`, `back`);
+  injects the View plugin's `ViewRendererContract`.
+- Both `use InteractsWithCookies` — wraps every public `CookieJar` method:
+  `cookie`, `queueCookie`, `rememberCookie`, `forgetCookie`, `hasQueuedCookie`,
+  `decryptCookie`, `cookieJar`. Defaults come from `config/cookie.php` + `.env`.
+- Both `use InteractsWithSession` — wraps the `SessionPort`: `sessionGet`,
+  `sessionPut`, `sessionHas`, `sessionPull`, `sessionForget`, `flash`,
+  `csrfToken`, `regenerateSession` (call after login — fixation defence),
+  `invalidateSession` (logout), `session`. No-ops gracefully when the Session
+  plugin is absent.
+- Both `use InteractsWithProject` — reads the `DomainContext` off the request
+  (`Request::attribute('domain')`, never the container): `project`,
+  `requireProject`, `projectName`, `projectPath`, `projectFace`, `projectHost`,
+  `isAdmin`/`isApi`/`isProject`/`isPublic`/`isPlatformOnly`, `projectFeatures`,
+  `hasFeature`, `feature`. Read helpers degrade to null/false/`[]` when no
+  context is attached (CLI/worker).
+- Both `use InteractsWithStorage` — wraps the on-demand `StoragePort`
+  (driver-agnostic, local disk or S3): `storage`, `storageAvailable`,
+  `storeUpload` (random name), `storeUploadAs` (keeps client name), `storeBase64`,
+  `storeContents`, `readFile`, `fileExists`, `fileUrl` (signed temp URL),
+  `deleteFile`, `copyFile`, `moveFile`. A route using these MUST declare
+  `"requires": ["storage.local"]`. Read helpers return null/false when Storage is
+  absent; write helpers throw (a missing backing store is a real fault).
+- `InteractsWithCookies`, `InteractsWithSession`, `InteractsWithProject` and
+  `InteractsWithStorage` share the `HasRequest` concern (holds `$request` +
+  `setRequest()`), flattened once so all the traits compose on one controller
+  without conflict.
+
+### RequestAware — kernel contract, actions take route params ONLY
+
+Both bases implement `Kernel\Http\Contracts\RequestAware`
+(`setRequest(Request): static`). `ExecuteStage` checks `instanceof RequestAware`
+and, when true, calls `setRequest($request)` (the container-bearing request) and
+invokes the action as `$method(...$routeParams)` — **without `$request`**. Plain
+controllers keep `$method($request, ...$params)` — fully backward compatible.
+
+```php
+final class CartController extends ApiController        // RequestAware
+{
+    public function show(string $id): Response          // route param only — no $request
+    {
+        $this->queueCookie('last_viewed', $id);         // request injected by the kernel
+        return $this->okOrNotFound($this->cart->find($id)?->toArray());
+    }
+}
+```
+
+Raw request inside the action: `$this->request`. Cookie helpers also accept an
+explicit `?Request` override.
+
+```
+✗ Coupling the kernel to the View plugin or a controller base — RequestAware is the only kernel↔controller seam
+✗ Adding $request to a RequestAware controller action — it receives route params only
+✗ Calling CookieJar::applyTo() from a controller — QueuedCookiesStage flushes the jar automatically (double-apply otherwise)
+```
+
 ---
 
 ## EVENT SYSTEM — TWO TYPES, TWO RULES
@@ -1396,7 +1546,11 @@ interface DatabasePort {
     public function query(string $sql, array $params = []): array;
     public function queryOne(string $sql, array $params = []): ?array;
     public function execute(string $sql, array $params = []): int;
-    public function lastInsertId(): string;
+    // Portable, atomic INSERT-or-UPDATE — compiles ON DUPLICATE KEY (MySQL) or
+    // ON CONFLICT … DO UPDATE (PostgreSQL/SQLite). NEVER hand-write either clause.
+    // $updateColumns: null = all non-conflict cols, [] = insert-if-absent, subset = those only.
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int;
+    public function lastInsertId(?string $sequence = null): string;  // pass the sequence name on PostgreSQL
     public function beginTransaction(): void;
     public function commit(): void;
     public function rollback(): void;
@@ -1427,7 +1581,9 @@ interface MailPort {
 
 interface StoragePort {
     public function store(string $contents, string $filename, string $path = '', string $visibility = 'private'): string;
+    public function storeStream($resource, string $filename, string $path = '', string $visibility = 'private'): string;  // large uploads — no full buffer
     public function get(string $path): string;
+    public function readStream(string $path);                          // large downloads — caller closes the handle
     public function temporaryUrl(string $path, int $expiresInSeconds = 3600): string;
     public function exists(string $path): bool;
     public function delete(string $path): bool;
@@ -1437,7 +1593,18 @@ interface HttpClientPort {   // outbound HTTP for Gateways — adapter: plugins/
     public function request(string $method, string $url, array $options = []): HttpClientResponse;
     public function get(string $url, array $query = []): HttpClientResponse;
     public function post(string $url, array $data = []): HttpClientResponse;   // + put/patch/delete
+    public function pending(): PendingRequestContract;   // immutable fluent builder — reachable via the PORT
 }
+// HttpClient adapter guarantees (plugins/HttpClient):
+//   • Retries are idempotent-only by DEFAULT (GET/HEAD/PUT/DELETE/OPTIONS/TRACE) on transport
+//     failure AND transient 5xx/429 — a POST/PATCH is never silently re-sent. Widen with the
+//     builder ->retryMethods([...]) or the 'retry_methods' request option. Backoff is
+//     coroutine-aware (OpenSwoole/Swoole Coroutine::usleep) so it never blocks the worker.
+//   • CR/LF header injection is REJECTED (throws); multipart field/file names strip CR/LF + ".
+//   • JSON bodies encode with JSON_THROW_ON_ERROR (throws GatewayException, never ships '{}').
+//   • Response body capped at HTTP_CLIENT_MAX_RESPONSE_BYTES (default 32 MiB) — OOM guard.
+//   • pending() + PendingRequestContract live in the kernel Ports namespace so a Gateway typed
+//     against HttpClientPort can use baseUrl()/withToken()/asForm()/attach() without touching the adapter.
 
 interface SessionPort {      // request-scoped — adapter: plugins/Session (essential module)
     public function start(?string $id = null): void;
@@ -1559,18 +1726,162 @@ $bus->assertNotDispatched(InvoiceCreatedIntegrationEvent::class);
 ✗ Route handler string without @ separator — must be 'Controller@method' format
 ✗ New local modules placed under projects/ — use plugins/ with Plugins\ namespace instead
 ✗ Plugin handler strings without the full Plugins\{Name}\... path in module.json
+✗ Relying on plugin load order for route/view resolution — it is deterministic (project-over-plugin)
+✗ Letting a plugin override a project route/view implicitly — only via an explicit lower view `priority`
+✗ Two plugins claiming the same route, or the same unnamespaced view name — boot fails / use namespace::view
+✗ Defining project routes in PHP — declare them in proj.json routes[] or Kernel::withRoutes()
 ✗ Laravel/Doctrine/Symfony migrations in this project — ONLY use LetMigrate
 ✗ Eloquent models, Doctrine entities, or ORM migrations — LetMigrate is standalone
 ✗ Routes in migrations or business logic — migrations ONLY define schema
 ✗ float for money in migrations — use decimal(precision, scale) with integer storage
 ✗ Writing migrations without a matching down() rollback
 ✗ Hardcoding database table names — use string literals, never interpolation
+✗ Hand-writing ON DUPLICATE KEY / ON CONFLICT in a repository — call $db->upsert() (driver-portable)
+✗ CONCAT / SUBSTRING / driver-specific functions in repository SQL — compute in PHP + bind, or branch on $db->driver()
 ✗ ON UPDATE CURRENT_TIMESTAMP on PostgreSQL — LetMigrate auto-creates BEFORE UPDATE triggers
 ✗ onUpdateCurrentTimestamp() on non-timestamp columns — only for DATE/DATETIME/TIMESTAMP
 ✗ --seed in refresh without wiring SeederRunner to MigrateRefreshCommand
 ✗ Mutating migration files after they've been applied — create a NEW migration instead
 ✗ Migrations that don't declare required env vars in LetMigrate config
 ✗ Pretend mode in production — only for CI previews (testing compiled SQL)
+```
+
+---
+
+## RESOURCE RESOLUTION — DETERMINISTIC PROJECT-OVER-PLUGIN PRIORITY
+
+Routes and views resolve through a single, predictable priority model:
+**project resources always win over plugin resources by default.** Order is
+never implicit or load-order dependent — it is fixed at boot and compiled into
+manifests. A plugin may only outrank the project by EXPLICITLY opting in (a
+lower numeric `priority`); the platform never lets a plugin override the project
+silently.
+
+### Routes — project overrides plugin
+
+| Source | Declared in | Scope (`solves`) | Compiled |
+|---|---|---|---|
+| Plugin route | plugin `module.json` `routes[]` | the plugin's domain | first |
+| Project route | `proj.json` `routes[]` **or** `Kernel::withRoutes([...])` | synthetic `__project__` | LAST |
+
+`CompileRouteManifestStage` compiles plugin routes first, then project routes.
+A project route declaring the same `METHOD path` as a plugin route **overrides**
+it (the manifest records `overrides`). Two plugins claiming the same route still
+hard-fail at boot. Project routes carry no module dependency graph: they resolve
+under the synthetic `__project__` scope (a no-module service entry with empty
+`requires`), and the controller — referenced by its FULL class path — autowires
+from the request container with full port access but runs no module `register()`.
+
+```jsonc
+// projects/<name>/proj.json (or the flat project root proj.json)
+{
+  "name": "shop",
+  "routes": [
+    { "method": "GET", "path": "/",     "handler": "Shop\\Http\\HomeController@index" },
+    { "method": "GET", "path": "/ping", "handler": "Shop\\Http\\HomeController@ping"  }
+  ]
+}
+```
+
+`EntryHelpers::projectRoutes($projectPath)` reads `proj.json` `routes[]`; the
+project bootstrap passes them to `->withRoutes(...)`. Keep project controllers
+THIN (orchestrate published plugin contracts) — real domain logic stays in
+plugins.
+
+#### Per-route `requires` — opt a project route into specific plugins
+
+The `__project__` scope has an EMPTY dependency graph, so by default a project
+route loads ZERO plugins: on-demand modules' `register()` never runs and their
+published contracts are unbound. To let ONE project route use a plugin without
+loading it app-wide, declare a route-level `requires[]` of module domains:
+
+```jsonc
+// proj.json — only THIS route pulls in view.rendering
+{ "method": "GET", "path": "/dashboard",
+  "handler": "Shop\\Http\\DashboardController@index",
+  "requires": ["view.rendering"] }
+```
+
+`CompileRouteManifestStage` validates each entry at BOOT (an unknown domain
+fails the build with a descriptive message) and stamps it onto the route entry;
+`LoadStage` seeds those domains (with their transitive `requires`) into THAT
+request's dependency graph only — `DependencyGraphCalculator::resolve($service,
+$additional)`. Routes without `requires[]` stay lean.
+
+Scope isolation still holds: a required plugin's PUBLIC contract resolves in the
+project controller, but its `bindInternal` bindings still throw
+`ScopeViolationException` cross-scope. This is the per-route alternative to
+making a plugin **essential** (loaded on every request):
+
+| Need | Mechanism |
+|---|---|
+| Some project routes need a plugin | route-level `requires[]` in `proj.json` |
+| Every request needs a plugin | `withEssentialModules([...])` |
+| The endpoint IS the plugin's domain | declare the route in the plugin's `module.json` |
+
+Project route entries also pass through `filters[]` (auth, throttle, …) to the
+compiler — same shapes as a plugin route. Plugin routes MAY also carry
+`requires[]`, though they normally get deps via their module's `solves` graph.
+
+```
+✓ A project route opts into a plugin via proj.json "requires": [domain, …].
+✓ Unknown require domains fail at BOOT, not at request time.
+✗ Requiring a plugin does NOT grant access to its internal bindings — only published contracts.
+```
+
+### Views — project-first cascade + namespacing
+
+`CompileViewManifestStage` compiles `view-manifest.php` from every `views`
+declaration (project `proj.json` + each plugin `module.json`):
+
+```php
+[ 'global'     => [ '/abs/project/views', '/abs/plugin/views', ... ],  // priority-ordered
+  'namespaces' => [ 'task' => [ '/abs/plugin/task/views' ] ] ]
+```
+
+Priority model — **LOWER wins (searched first):**
+- PROJECT view paths default to **priority 0** → always highest precedence.
+- PLUGIN view paths default to **priority 100** → fallbacks below the project.
+
+Resolution in `PhpViewRenderer`:
+- `render('welcome')` — plain name → walks the global cascade (project first,
+  plugin fallbacks). Project overrides a plugin view of the same name.
+- `render('task::welcome')` — namespaced → checks the PROJECT's override first
+  (`{global-path}/task/welcome.php`), THEN the `task` namespace's own dir. Lets a
+  project override one targeted plugin view while the plugin stays canonical, and
+  prevents cross-plugin name collisions.
+
+Declaration shapes (`module.json` "views" / `proj.json` "views"):
+
+```jsonc
+"views": "resources/views"                                   // shorthand
+"views": { "path": "resources/views",
+           "namespace": "task", "priority": 100, "global": true }  // full
+"views": [ { ... }, { ... } ]                                // several sources
+```
+
+- `namespace` defaults to the module `name` (project sources have no default
+  namespace — they feed the global cascade only).
+- `priority` is the configurable knob. A plugin setting `"priority": -1`
+  EXPLICITLY preempts the project — the only sanctioned way a plugin wins.
+- `global: false` exposes a source ONLY under its namespace (not in the plain
+  cascade) — maximum collision safety.
+
+`VIEW_PATHS` env still works: it is **prepended** to the compiled cascade, so an
+operator can raise a project path's priority at runtime but can NEVER let a
+plugin implicitly outrank the project. `VIEW_EXTENSIONS` / `VIEW_SAVE_DATA`
+behave as before.
+
+### Rules
+
+```
+✓ Project resources (routes, views) override plugin resources BY DEFAULT.
+✓ Project routes compile last; project view paths sort to priority 0.
+✓ Use `namespace::view` to target a plugin view and to avoid name collisions.
+✓ A plugin overrides the project ONLY via an explicit lower `priority`.
+✗ Relying on plugin load order for resolution — it is fully deterministic.
+✗ Defining project routes in PHP — declare them in proj.json / withRoutes().
+✗ Letting two plugins claim the same route or unnamespaced view name.
 ```
 
 ---
@@ -1597,25 +1908,249 @@ Local application-specific modules live in `plugins/`, NOT `projects/`.
 
 **Registered plugins:**
 
-| Plugin | Namespace        | Solves            |
-|--------|------------------|-------------------|
-| Task   | `Plugins\Task\`  | `task.management` |
+| Plugin  | Namespace          | Solves             |
+|---------|--------------------|--------------------|
+| Task    | `Plugins\Task\`    | `task.management`  |
+| SiteSEO | `Plugins\SiteSEO\` | `seo.management`   |
+| I18n    | `Plugins\I18n\`    | `i18n.translation` |
 
 **Infrastructure plugins (port adapters / pipeline stages):**
 
 | Plugin        | Solves                  | Provides (port / stage)                                  | Activation |
 |---------------|-------------------------|----------------------------------------------------------|------------|
-| Storage       | `storage.local`         | `StoragePort` (local disk, signed temp URLs)             | on-demand  |
-| View          | `view.rendering`        | `ViewRendererContract` (PHP templates: layouts, sections, decorators) | on-demand  |
-| HttpClient    | `http.client`           | `HttpClientPort` (cURL, fluent builder, multipart)       | on-demand  |
-| Session       | `session.management`    | `SessionPort` (file/array handlers, flash, CSRF token)   | essential  |
+| Storage       | `storage.local`         | `StoragePort` (local disk **or** S3/S3-compatible via Flysystem; atomic+fsync writes, stream up/download, signed temp URLs). Config via `storage_config()` / `STORAGE_*` env | on-demand  |
+| View          | `view.rendering`        | `ViewRendererContract` (PHP templates: layouts, sections, decorators; project-first cascade + `ns::view`) | on-demand  |
+| HttpClient    | `http.client`           | `HttpClientPort` (cURL, fluent `pending()` via port, idempotent-safe retries + coroutine backoff, CR/LF header + multipart hardening, JSON_THROW_ON_ERROR, response size cap) | on-demand  |
+| Session       | `session.management`    | `SessionPort` (file/array/cookie handlers, flash, CSRF token). Cookie driver = stateless encrypted-or-HMAC-signed cookie with absolute + idle timeout, configurable fingerprint binding (UA and/or IP), transparent compression, size ceiling, and enforceable auth/encryption | essential  |
 | Cookie        | `http.cookies`          | `CookieJar` + queued-cookie flush stage (encrypts via `EncryptionPort`) | essential |
 | RedisCache    | `cache.redis`           | `CachePort` + `QueuePort` (ext-redis, in-memory fallback)| essential  |
-| SecurityFilters | `http.security_filters` | CORS / SecureHeaders / HMAC / auth / rate-limit stages | always-hooked |
+| SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
+| Tenancy       | `tenancy.routing`       | Multi-tenant control plane ONLY (NOT authentication): `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `TenantAdminServiceContract`. Maps `Identity.tenantId` → isolated tenant `DatabasePort`, rebinds it per request (`TenantContextStage` @ `after.load`). Fail-closed routing + per-tenant circuit breaker; central `tenants`/`user_tenants`/`tenant_invitations`/`audit_log`/`tenant_hosts`. Selection flow: `GET /ajx/me/tenants`, `POST /ajx/tenants/{id}/select` (re-verifies membership, mints `tnt` token) — the tenant seat re-check lives HERE, at selection. Invitations (email onboarding → seat). CLI: `tenants:create`, `tenants:migrate`. **Refresh tokens live in `Plugins\Auth`, not here** (authentication ≠ tenancy). `requires: ["database.management","auth.identity","user.management"]` | essential  |
+| User          | `user.management`       | GLOBAL central identity store: `UserServiceContract` (register/CRUD, email verification, timing-safe + rate-limited credential verification, rehash-on-login). Repo + transactional outbox pinned to **central**; optimistic-locked; emits `user.registered/updated/deleted`. Optional HIBP breach screening (`USER_BREACH_CHECK`). CLI `user:outbox:relay`. `requires: ["database.management","crypto.services","cache.redis","view.rendering","http.client"]`. Full guide: `docs/ai-context/24_USER.md` | on-demand  |
+| Auth          | `auth.identity`         | Authentication — the ONLY home for sessions/tokens. ISSUANCE via `AuthServiceContract` (JWT iss/aud/jti, RS/ES/PS signing; PATs w/ expiry+abilities; session login + remember-me `Recaller`). VERIFICATION via SecurityLayers in `withSecurity([...])`: `JwtAuthLayer` (jti deny-list) + `PersonalAccessTokenLayer`; `SessionAuthStage` @ after.load p22. **`RefreshTokenServiceContract`** (revocable first-party sessions, one-time-use rotation + family reuse detection, `refresh_tokens` table, tenant-agnostic — `tnt` is a passthrough hint). **`AuthManager`** manages named guards+providers (`config/auth.php`, filesystem-scanned `Drivers/`); `ModelUserProvider`+`AuthUserProxy` (HasApiTokens, emits `Identity`); `StatefulSessionGuard` (attempt/login/logout/once/basic/viaRemember); `Guard` read-only projection w/ **hierarchical scope inheritance** (`ScopeInheritance`); `PasswordBroker` (CachePort reset tokens). Routes `/auth/{login,logout,me}`, `/auth/tokens` (PAT mgmt), `/auth/token/refresh` (transient SPA token), `/auth/refresh` (refresh-token rotation). Controller concerns `InteractsWithAuth`/`InteractsWithAuthManager`. CLI `auth:tokens:prune`. `requires: ["database.management","crypto.services","user.management"]`. Full guide: `docs/ai-context/25_AUTH.md` | on-demand (SecurityLayers wired in bootstrap) |
+| OAuth2        | `oauth.server`          | Native OAuth 2.1 + OIDC authorization server (no new vendor — on `firebase/php-jwt`). Grants: authorization_code (+PKCE), client_credentials, refresh_token (rotation + family reuse-detection), password, device_code (RFC 8628). Endpoints `/oauth/{authorize,token,device_authorization,device,userinfo,introspect,revoke,jwks}` + RFC 8414 / OIDC discovery. Access tokens are platform JWTs (verified by Auth's `JwtAuthLayer`); scopes namespaced as `scope:*` in `permissions`; `aud`=resource + `azp`=client; revoke = refresh-family + JWT `jti` deny-list. Self-service mgmt API (owner-scoped): `/oauth/clients` (CRUD, `owner_id` column), `/oauth/authorized-tokens` (list/revoke granted apps), `/oauth/scopes` (`ScopeRegistry` catalogue w/ descriptions). CONTROL-PLANE: serve on the apex/central host. CLI `oauth:client:{create,list,revoke,rotate}`, `oauth:prune`. `requires: ["database.management","crypto.services","user.management","view.rendering"]`. Full guide: `docs/ai-context/26_OAUTH2.md` | on-demand  |
+| Pageflow      | `http.pageflow`         | Inertia-style SPA bridge. `PageflowResponder` returns a component + props; negotiates a JSON page object (XHR nav) vs an HTML shell (full load) with a version stage (stale client → 409 hard-reload). Shared props via `pageflow_share()`; CSRF mints the kernel `CsrfTokenLayer` token (bind cookie via `PAGEFLOW_CSRF_COOKIE` — MUST match the layer's `bindCookie`). Ships a React client in `plugins/Pageflow/ui/` (federated, not vendored — see below). CLI `pageflow:types`. `requires: []` | on-demand  |
+| ViteManifest  | `vite.manifest`         | `ViteContract` — resolves Vite build assets for HTML shells: hashed `<script>`/`<link>` + preloads in prod (`manifest-<surface>.json`), or the dev-server URLs + `@vite/client` + React-refresh under HMR (a `<surface>-hot` file). Dependency-free (no Laravel globals); **surfaces** replace a mode registry. Helpers `vite()`/`vite_asset()`/`vite_react_refresh()`. `requires: []`. Guide: `plugins/ViteManifest/README.md` | on-demand  |
+
+**Frontend / plugin UI federation (`hkm ui`).** Each project owns a per-project
+frontend (template in `tools/src/templates/frontend/`, scaffolded by `hkm ui
+init`): buildable apps are **surfaces** (`src/surfaces/<name>/`, vite-discovered —
+no mode registry) and the shared shadcn design system lives in `src/shared/ui`. A
+plugin MAY ship its own UI in `plugins/<Name>/ui/` (declared in `ui/ui.json`:
+alias, entry, and a `surfaces` map for admin/site pages). `hkm ui sync` mirrors
+every ENABLED plugin's `ui/` into `frontend/plugins/<slug>/` and regenerates
+`tsconfig.plugins.json` (the single source of path aliases — `tsconfig.json`
+`extends` it, so vite AND TypeScript resolve `@pageflow`, `@user`, … from one
+file). Surfaces glob plugin pages per face (`plugins/*/admin|site/Pages/**`);
+project pages win on collision. Full guide:
+`tools/src/templates/frontend/docs/HOW_IT_WORKS.md`.
 
 **Adding a new plugin:** create `plugins/{Name}/`, implement all GDA layers under
 `Plugins\{Name}\`, then add `Plugins\{Name}\Provider::class` to the relevant
 `projects/{project}/bootstrap/app.php`.
+
+---
+
+## I18N — TRANSLATION & LOCALIZATION (`Plugins\I18n\`, solves `i18n.translation`)
+
+File-based translator for localized messages (validation, UI copy). On-demand
+(`requires: []`); exposes `Plugins\I18n\Translator`. Lang files live at
+`{dir}/{locale}/{group}.php` and `return` a flat/nested array; lookups use
+dotted `group.key` notation. Translation NEVER throws — a missing key falls back
+to the fallback locale, then returns the key itself.
+
+### Translator API (`Plugins\I18n\Translator`)
+
+```php
+$t->get('validation.required', ['field' => 'email']);   // → "The email field is required."
+$t->choice('cart.apples', 5);                           // pluralization (see below)
+$t->has('promo.banner');                                // target locale only (no fallback)
+$t->setLocale('fr'); $t->locale();                      // active locale
+```
+
+- **Placeholders** — `:name` substitution with three cases: a replace key `name`
+  fills `:name`, `:Name`, `:NAME`. Keys are applied **longest-first**, so `:min`
+  can never corrupt `:minutes` (`strtr` under the hood — do NOT regress this to a
+  per-key `str_replace` loop).
+- **Pluralization** — `choice($key, $count, $replace)` splits the line on `|`.
+  Simple `singular|plural` (count===1 → first, else second) OR explicit ranges
+  `{0} none|[1,19] some|[20,*] many`. `:count` is auto-supplied. For 3+ forms use
+  ranges — the simple form is two-way only.
+- Path-traversal guarded: locale/group must match `/^[A-Za-z0-9_\-]+$/`.
+
+### Per-request locale — `LocaleStage` (after.load, priority 45)
+
+`Provider::boot()` registers `LocaleStage` which negotiates the locale from
+`Accept-Language` against `APP_LOCALES` (comma-separated) via
+`Request::negotiate()->language()`, calls `setLocale()`, and binds the Translator
+into `Plugins\I18n\Support\Lang` for the request (cleared in a `finally` — no
+Swoole leak). A route must load the module (be in its dependency graph) for the
+stage to bind — a bare `__project__` route needs `"requires":
+["i18n.translation"]`.
+
+### Global helpers (`plugins/I18n/Support/helpers.php`, autoloaded via composer `files`)
+
+```php
+__('messages.welcome', ['name' => 'Sam']);      // alias of trans()
+trans('validation.email', ['field' => 'email'], 'fr');   // optional per-call locale
+trans_choice('cart.items', $count, ['cart' => 'bag']);
+lang_has('promo.banner');                        // false when unbound (CLI/worker)
+```
+
+Helpers degrade gracefully when no Translator is bound (CLI/worker, or a route
+that didn't load I18n): `trans`/`__` return the key, `lang_has` returns false.
+
+### Config (`module.json` config[])
+
+`APP_LOCALE` (active, default `en`), `APP_FALLBACK_LOCALE` (default `en`),
+`APP_LOCALES` (negotiation set for `LocaleStage`), `APP_LANG_PATH` (override the
+lang directory — projects point this at their own `resources/lang` to
+override/extend the plugin's built-in catalogue). The `psp-shop` project wires
+all four in `app/bootstrap/app.php` and ships `en`/`fr`/`es` catalogues with a
+live demo at `GET /i18n` + `/i18n/advanced`.
+
+```
+✓ Missing keys surface the key itself — never empty, never a throw.
+✓ Longest-key-first placeholder substitution — do not regress to naive str_replace.
+✓ 3+ plural forms → explicit {n}/[a,b] ranges, not bare singular|plural.
+✗ Reading APP_LOCALE via getenv() — use env() (project layer sets $_ENV).
+✗ Storing per-request locale in a static without clear() — LocaleStage owns that lifecycle.
+```
+
+---
+
+## ENTITY, CASTING & HYDRATION SUPPORT (Project layer — `Project\Support\`)
+
+Reusable, **DI-free** entity-mapping helpers under `projects/Support/`. They are
+the GDA-compliant decomposition of the legacy CodeIgniter/Eloquent-style
+`__DEV__/Entity` Active Record: the fat AR base was split across the layers it
+conflated, and only the genuinely reusable casting/mapping/entity-mechanics live
+here. They perform **no I/O, read no globals, and import nothing outside their
+own namespace** — safe to use from a plugin's `Domain/`, `Application/` or
+`Infrastructure/` layer.
+
+| Namespace | Class(es) | Role |
+|---|---|---|
+| `Project\Support\Casting` | `DataCaster` | Cast ONE field value, either direction (`get`=DB→PHP, `set`=PHP→DB) |
+| `Project\Support\Casting` | `TypeParser` | Parse a type string → `{nullable, baseType, params}` |
+| `Project\Support\Casting` | `CastInterface` / `BaseCast` | Cast contract + identity base |
+| `Project\Support\Casting` | `CastException` | Invalid handler / JSON |
+| `Project\Support\Casting\Casts` | 11 built-ins | `int integer float double string bool boolean int-bool csv array json object datetime timestamp` |
+| `Project\Support\Hydration` | `DataConverter` | Map a whole DB row ⇄ object (uses `DataCaster`) — the Repository's hydrator |
+| `Project\Support\Entity` | `Entity` (abstract) | Enterprise base class for domain entities |
+
+### Type-cast grammar
+
+`?`-prefix = nullable; `base[param,param]` = handler + params. E.g. `?json[array]`
+(nullable JSON decoded as assoc array), `datetime[ms]`, `int-bool`. `bool` only
+casts on READ — use `int-bool` when the column stores `0/1` and the WRITE must
+emit an int. Register custom casts via the `castHandlers` arg or the entity's
+`$customCasters` (must implement `CastInterface`).
+
+### `Entity` base (`Project\Support\Entity\Entity`)
+
+Implements `JsonSerializable`, `ArrayAccess`, `Stringable`. Feature set, all
+infrastructure-free:
+
+- **Attribute bag + bidirectional casting** via `$casts` + `DataCaster`.
+- **Mass-assignment guard — secure by default** (`$guarded = ['*']`): `fill()`
+  only writes `$fillable` keys (defense-in-depth; the DTO at the edge is still
+  the primary validator). `forceFill()` bypasses for trusted data.
+- **Visibility:** `$hidden` / `$visible`, runtime `makeHidden()/makeVisible()`.
+- **Secret redaction:** `__debugInfo()` masks `$hidden` as `********` so secrets
+  never leak into `var_dump()`/logs/traces.
+- **Computed `$appends`**, date-aware serialization (`$dates`/`$dateFormat`).
+- **Typed null-safe getters:** `getString/getInt/getFloat/getBool/getArray/getDate`.
+- **Change tracking:** `isDirty/isClean/wasChanged/getDirty/getChanges/getOriginal/syncOriginal`.
+- **Domain-event buffer:** `recordEvent()` (protected) + `releaseEvents()` — the
+  Service flushes them inside the tx; the entity NEVER dispatches.
+- **Immutability:** `seal()` → any mutation throws `LogicException` (read-only snapshots).
+- **Hydrator seam:** `static reconstitute(array)` (records NO events) + `toRawArray()`.
+- **Identity/lifecycle:** `getKey/getKeyName/exists/is/isNot`, `make()`, `replicate()` (drops PK), `__clone` resets tracking.
+
+### What this is NOT — it stays GDA-compliant
+
+```
+✗ NO save()/delete()/find()/getRepo_() on the entity — persistence is the Repository's job (DatabasePort)
+✗ NO meta tables, NO app()/kernel()/config() globals, NO magic __get DB fallback
+✗ NOT an ORM — the entity never queries; a Repository hydrates it via DataConverter::reconstruct()
+✓ Repository: Entity::reconstitute($row) (or DataConverter::reconstruct) ; $db->upsert($table, $entity->toRawArray(onlyChanged:true), ['id'])
+✓ Casts are STATIC + STATELESS (OpenSwoole-safe); DataConverter pools casters by types-hash
+✓ Prefer ?type over strict:false for nullable columns ; reconstruct() has no reflection back-door (needs a static factory/closure)
+```
+
+The strict GDA gold standard is still a `final` entity with a private constructor
+and fully-encapsulated typed state. Extend `Project\Support\Entity\Entity` only
+when a flexible, meta-driven attribute bag genuinely earns its keep; prefer a
+hand-written `final` entity for small, well-defined aggregates.
+
+Full guides: `projects/Support/Casting/README.md` and
+`projects/Support/Entity/README.md`.
+
+---
+
+## SEO, SITEMAPS & INDEXING (plugin + Project-layer support)
+
+The **SiteSEO** plugin (`Plugins\SiteSEO\`, solves `seo.management`, on-demand,
+`requires: ["http.client"]`) is a full SEO toolkit; a set of **Project-layer**
+helpers under `Project\Support\Seo\` + controller traits make it ergonomic. The
+toolkit classes autoload directly, so sitemap/Open-Graph/JSON-LD building needs
+NO module load — only network actions (ping / IndexNow) need the module
+(`requires: ["seo.management"]`) because they go through `HttpClientPort`.
+
+### Published contract — `Plugins\SiteSEO\API\Contracts\SeoServiceContract`
+`openGraph()`, `schema()`, `sitemap()`, `robots()`, `pingSitemap()`,
+`submitUrls()` (legacy), `indexNow(host,key,keyLocation,urls,endpoints,dryRun)`
+(auto-batches 10k, lazy iterable, dry-run), `indexNowChunks()` (lazy batch
+generator). Outbound HTTP lives ONLY in `Infrastructure/Gateways/SearchEngineGateway`
+(`HttpClientPort`) — never raw cURL.
+
+### Project-layer support (`Project\Support\Seo\`) — reusable, DI-free
+| Class | Role |
+|---|---|
+| `RouteCatalog` | Reads `var/cache/manifests/route-manifest.php`; `publicPaths()` = public static GET pages (drops `{param}`, auth-gated, `/api`, SEO endpoints) |
+| `SitemapGenerator` | Small/route-derived sitemaps via the toolkit `SitemapBuilder` (one `<urlset>`, ≤30k); `toXml()` / `save($dir)` |
+| `SitemapStreamWriter` | **Enterprise**: streams an `iterable` straight to split child files + index, **O(1) memory** (no DOM), auto-split at 50k, optional gzip. For millions of URLs |
+| `SitemapUrlProvider` (iface) + `SitemapSource` | Expand a dynamic route (`/blog/{slug}`) from the DB via a keyset-cursor **generator**; `SitemapSource` stitches static + provider URLs and reports `uncoveredDynamicRoutes()` |
+| `RichGraph` | Schema.org JSON-LD **`@graph`** for Google rich results — `organization`, `website` (SearchAction), `webPage`, `breadcrumb`, `article`/`newsArticle`/`blogPosting`, `product`, `book`, `course`, `realEstate`, `pageantEdition`/`awardEdition`/`contestant` (Event+Person), `faq`. Nodes cross-link by `@id` |
+| `SeoHead` | One-call `<head>`: `<title>`, description, **canonical**, **robots**, **hreflang**/x-default, + attached OG and JSON-LD |
+| `IndexNowKey` | IndexNow key value object: `value()`, `fileContents()`, `location($base)` (keyLocation) |
+| `FileQueue` (in `Project\Infrastructure\`) | Dependency-free cross-process `QueuePort` (JSON-lines + locked `pop()`) so the worker drains jobs without Redis |
+
+### Controller traits (`Project\Http\Controllers\Concerns\`)
+- `InteractsWithSeo` — `siteBaseUrl()`, `routeCatalog()`, `sitemap()/sitemapFromRoutes()`,
+  `openGraph($type,$title)`, `ogImage($url,$w,$h,$alt)`, `richGraph()`, `robots()`.
+- `InteractsWithGraphSeo` — composes the above + `graph()` and `seoHead()`.
+
+### Background indexing (job + listener)
+- Job `Plugins\SiteSEO\Application\Jobs\IndexNowJob` (module.json `jobs[]`,
+  name `seo.indexnow`, queue `indexing`) submits ONE ≤10k batch; throws → worker
+  retry; honours a `dryRun` payload flag. Bound in `Provider::register()`.
+- Dispatch = chunk a URL stream with `indexNowChunks()` and `QueuePort::push('seo.indexnow', …)`
+  per batch (flat memory).
+- **Index-on-publish**: emit `Plugins\SiteSEO\API\IntegrationEvents\UrlPublishedIntegrationEvent`
+  after a save commits; the SEO module subscribes `EnqueueIndexNowListener`
+  (`Provider::boot()`) which enqueues `seo.indexnow`. Because the EventBus
+  resolves listeners from the **CoreContainer** (and `has()` is bound-only), the
+  **project binds the listener with its `QueuePort`** in `bootstrap/app.php` —
+  the plugin declares the subscription, the project supplies infrastructure.
+- env: `INDEXNOW_KEY` (required to submit — listener no-ops without it),
+  `INDEXNOW_LIVE` (truthy ⇒ real submit, else enqueued dry run).
+
+### Rules
+```
+✓ Sitemap/OG/JSON-LD building is DI-free (toolkit autoloads) — no module needed.
+✓ Network actions (ping, IndexNow) need requires:["seo.management"] → HttpClientPort.
+✓ Huge sitemaps → SitemapStreamWriter from a generator (keyset DB cursor), never an array/DOM.
+✓ Dynamic routes get a SitemapUrlProvider; SitemapSource.uncoveredDynamicRoutes() guards omissions.
+✓ One JSON-LD @graph per page (RichGraph), nodes linked by @id — not disconnected blobs.
+✗ Raw cURL for ping/IndexNow — always SearchEngineGateway + HttpClientPort.
+✗ Buffering a whole catalogue in memory to build a sitemap or submit IndexNow.
+✗ Binding an EventBus listener that needs a port WITHOUT the project binding it in CoreContainer.
+```
+
+Full live demos (all 13+ content types, streaming, jobs, index-on-publish) live
+in `projects/.../` and the `psp-shop` standalone project.
 
 ---
 
@@ -1667,8 +2202,20 @@ For deeper context on any layer, reference:
 - `@docs/ai-context/07_CONTROLLER.md`         — HTTP controllers, DTO validation pattern
 - `@docs/ai-context/08_EVENTS.md`             — domain vs integration events, EventBus
 - `@docs/ai-context/09_SECURITY.md`           — SecurityGateway, Identity, JWT internals
+- `@docs/ai-context/21_CSRF.md`               — CsrfTokenLayer: HMAC token CSRF, framework wiring + usage
 - `@docs/ai-context/10_TESTING.md`            — test patterns, port fakes, service tests
 - `@docs/ai-context/13_ANTIPATTERNS.md`       — 12 wrong/correct code pairs
 - `@docs/ai-context/16_PLUGINS.md`            — plugins folder convention, local module checklist
 - `@docs/ai-context/18_MIGRATIONS.md`         — LetMigrate engine, migrations, seeders
 - `@docs/ai-context/19_DATABASE.md`           — multi-driver Database module, DatabasePort adapter, connections
+- `@docs/ai-context/22_DATA_ACCESS_ORM_BLUEPRINT.md` — repository/hydrator/entity mapping, portable DatabasePort API (upsert), no vendor ORM
+- `@docs/ai-context/23_TENANCY.md`             — Tenancy plugin: identification modes, TenantContextStage routing + tenant cookie, central tables, CLI provisioning, membership auto-assign, audit
+- `@docs/ai-context/24_USER.md`                — User plugin: central identity, UserServiceContract, transactional outbox, audit_log persistence, tenant-origin on user.registered
+- `@docs/ai-context/25_AUTH.md`                — Auth plugin: JWT/PAT/session issuance + verification, JwtAuthLayer (iss/aud/leeway, jti revocation), asymmetric signing, SessionAuthStage, /auth routes
+- `@docs/ai-context/26_OAUTH2.md`              — OAuth2 plugin: OAuth 2.1 + OIDC authorization server (grants, PKCE, device code, JWKS, introspection/revocation, scope namespacing, apex-host placement)
+- `@docs/ai-context/27_ENTITY_SUPPORT.md`      — Project\Support: DataCaster casting engine, TypeParser grammar, built-in + custom casts, DataConverter hydrator, the enterprise Entity base (GDA-safe decomposition of the legacy Active Record)
+- `@projects/Support/Casting/README.md`        — full casting + hydration cookbook
+- `@projects/Support/Entity/README.md`         — full Entity base reference + 18-part cookbook
+- `@plugins/ViteManifest/README.md`            — ViteManifest plugin: `ViteContract`, surface-aware asset resolution (hashed prod tags vs dev-server/HMR + React refresh), `vite()`/`vite_asset()`/`vite_react_refresh()` helpers, config
+- `@plugins/User/ui/README.md`                 — worked example of a plugin shipping UI for BOTH faces (admin + site pages), federation, per-surface page discovery, and the auth/permission/container-rebind notes
+- `@tools/src/templates/frontend/docs/HOW_IT_WORKS.md` — per-project frontend: surfaces (no mode registry), `hkm ui` federation, `tsconfig.plugins.json` as the single alias source, shadcn `@ui` kit, and how to add a page on the admin + project surfaces

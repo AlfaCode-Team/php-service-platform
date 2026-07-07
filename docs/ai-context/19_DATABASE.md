@@ -301,9 +301,35 @@ fake (see [10_TESTING.md](10_TESTING.md)).
 
 ---
 
+## CROSS-DRIVER PORTABILITY (UNIFORM API)
+
+PDO's API and the `:named` placeholder scheme are identical across MySQL,
+PostgreSQL and SQLite — but the SQL *text* is not. `DatabasePort` absorbs the
+constructs that genuinely differ so repositories never branch on the driver:
+
+| Need | Use | Never hand-write |
+|---|---|---|
+| Insert-or-update | `$db->upsert($table, $values, $conflictColumns, $updateColumns)` | `ON DUPLICATE KEY UPDATE` / `ON CONFLICT …` |
+| Last insert id | `$db->lastInsertId($sequence = null)` — pass the sequence name on PostgreSQL | `lastInsertId()` assuming MySQL semantics |
+
+`upsert()` compiles to `INSERT … ON DUPLICATE KEY UPDATE col = VALUES(col)` on
+MySQL and `INSERT … ON CONFLICT (cols) DO UPDATE SET col = EXCLUDED.col` on
+PostgreSQL/SQLite, quoting identifiers per driver. `$conflictColumns` must have a
+matching unique/PK constraint. `$updateColumns`: `null` = all non-conflict
+columns, `[]` = do nothing on conflict (insert-if-absent), a subset = only those
+(e.g. refresh `role`/`updated_at` but preserve the original `joined_at`). It is
+atomic — no UPDATE-then-INSERT race.
+
+Constructs the port does NOT abstract (keep to the portable subset, or branch on
+`$db->driver()` in the rare case you must): string concatenation (`CONCAT` vs
+`||`), `SUBSTRING`/`substr`, `bytea`/BLOB streams, and vendor functions. Prefer
+computing such values in PHP and binding the result. Full guidance:
+[22_DATA_ACCESS_ORM_BLUEPRINT.md](22_DATA_ACCESS_ORM_BLUEPRINT.md).
+
 ## RULES — WHAT NOT TO DO
 
 ```
+✗ Hand-writing ON DUPLICATE KEY / ON CONFLICT — use $db->upsert() (driver-portable)
 ✗ Importing a driver/adapter class in a repository — depend on DatabasePort only
 ✗ Reading DB_* env vars anywhere but DatabaseConfigurationFactory
 ✗ Letting a \PDOException escape the module — always ConnectionException

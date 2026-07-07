@@ -71,12 +71,14 @@ src/
 ├── Contracts/ModuleContract.php   ← solves(), requires(), exposes(), register(), boot()
 │
 ├── Boot/
-│   ├── BootPipeline.php           ← 9 stages, fail-fast on any error
+│   ├── BootPipeline.php           ← 10 stages, fail-fast on any error
 │   └── Stages/
 │       ├── ValidateConfigStage    ← env vars present + typed
 │       ├── DetectConflictsStage   ← no two modules share same solves()
 │       ├── DetectCyclesStage      ← no circular requires[] chains
-│       ├── CompileRouteManifest   ← routes[] → route-manifest.php
+│       ├── CompileServiceManifest ← services[] → service-manifest.php (+ __project__ scope)
+│       ├── CompileRouteManifest   ← routes[] → route-manifest.php (plugin + project; project OVERRIDES)
+│       ├── CompileViewManifest    ← views[] → view-manifest.php (project-first cascade + namespaces)
 │       ├── CompileJobManifest     ← job modules → job-manifest.php
 │       ├── CompileCommandManifest ← command modules → command-manifest.php
 │       ├── RegisterPortsStage     ← verify port bindings exist
@@ -98,7 +100,7 @@ src/
 │   └── ModuleContainer.php        ← request-scoped: scope isolation enforced
 │
 ├── Pipelines/
-│   ├── Http/   HttpPipeline + 6 stages + hook system (after.security, after.load, after.execute)
+│   ├── Http/   HttpPipeline + 6 stages + hook system (after.security/load/execute) + FilterRegistry/RouteFilterStage (declarative route filters[])
 │   ├── Cli/    CliPipeline + 6 stages  (Arguments + Output are @deprecated — use AbstractCommand)
 │   └── Worker/ WorkerPipeline + WorkerLoop + JobPayload + JobResult + retry strategies
 │
@@ -170,6 +172,13 @@ Migration Schema API notes (avoid the common mistakes that broke the bundled mig
 - Seeder files may EITHER `return new class implements SeederInterface {}` OR declare a
   named `final class <FileName> implements SeederInterface {}` (the `make:seeder` scaffold).
 - Seeding runs via `db:seed` (optionally `db:seed --class <Name>`); there is no `seed:*` group.
+- Table-level options are Blueprint methods: `$t->engine('InnoDB')`, `$t->charset('utf8mb4')`,
+  `$t->collation('utf8mb4_0900_ai_ci')`, `$t->rowFormat('DYNAMIC')`, `$t->comment('…')`. These
+  (ROW_FORMAT / ENGINE / CHARSET / COLLATE / COMMENT) are emitted only by the MySQL grammar;
+  PostgreSQL / SQLite / SQL Server ignore them (they override `compileTableOptions()` to return '').
+- CHECK constraints: `$t->check('status between 1 and 3', 'chk_status')` — a raw boolean SQL
+  expression (unquoted column names) + optional name. Portable: emitted inline in the CREATE
+  TABLE body on all four drivers. There is no per-column `->check()` modifier — it is table-level.
 
 **AbstractCommand API** (not Symfony — do not mix these up):
 - `configure()` — set `$this->name`, `$this->description`; call `addArgument()` / `addOption()`
@@ -195,7 +204,13 @@ return Kernel::configure()
     ->withSecurity([
         new FirewallLayer(blocklist: config('security.blocklist')),
         new RateLimiterLayer(store: CachePort::class, limits: config('security.limits')),
-        new CsrfTokenLayer(exemptPaths: config('security.csrf_exempt')),
+        new CsrfTokenLayer(                                  // HMAC token (WP-nonce style), NOT double-submit
+            bindCookie:  'hkm_session',                     // pin to HttpOnly cookie's raw value ('' = unbound)
+            lifetime:    43200,                             // SECONDS; make()/valid() lifetime MUST match
+            exemptPaths: config('security.csrf_exempt'),    // e.g. ['/api']
+        ),
+        // CSRF: stateless HMAC(APP_KEY) token — nothing stored, no cookie trusted, empty APP_KEY fail-closes.
+        // Mint with CsrfTokenLayer::make(); verify out-of-band with ::valid(). Guide: docs/ai-context/21_CSRF.md
         // JWT / API-key / session auth: provided by your AuthModule (registers a layer in boot()).
     ])
     ->withErrorPipeline(
@@ -374,14 +389,83 @@ interface ModuleContract
     { "method": "POST", "path": "/api/invoices",      "handler": "InvoiceController@create" },
     { "method": "GET",  "path": "/api/invoices/{id}", "handler": "InvoiceController@show"   }
   ],
+  "views":   "resources/views",
   "emits":   ["invoice.created", "invoice.paid"],
   "listens": ["payment.succeeded"],
   "config":  ["INVOICE_CURRENCY", { "key": "INVOICE_TAX_RATE", "type": "float", "required": false }]
 }
 ```
 
-Routes are ONLY in module.json — never in PHP files.
+Plugin routes are ONLY in module.json — never in PHP files (projects declare
+their own routes in proj.json; see "RESOURCE RESOLUTION").
+Optional `views` (string/object/list) registers the plugin's view paths +
+namespace into the project-first cascade — see "RESOURCE RESOLUTION".
 Config vars declared here or boot fails with a descriptive error.
+
+---
+
+## RESOURCE RESOLUTION — DETERMINISTIC PROJECT-OVER-PLUGIN PRIORITY
+
+Routes and views resolve through ONE predictable model: **project resources
+always win over plugin resources by default.** Order is fixed at boot and
+compiled into manifests — never implicit or load-order dependent. A plugin may
+outrank the project ONLY by explicitly opting in (a lower numeric view
+`priority`); the platform never lets a plugin override the project silently.
+
+### Routes — project overrides plugin
+
+- Plugin routes: plugin `module.json` `routes[]` → compiled FIRST, under the
+  plugin's `solves` domain.
+- Project routes: `proj.json` `routes[]` (or `Kernel::withRoutes([...])`) →
+  compiled LAST, under the synthetic `__project__` scope (no module graph; the
+  full-class-path controller autowires from the request container).
+- A project route with the same `METHOD path` as a plugin route OVERRIDES it.
+  Two plugins claiming the same route still hard-fail at boot.
+
+```jsonc
+// proj.json
+{ "routes": [ { "method": "GET", "path": "/", "handler": "Shop\\Http\\HomeController@index" } ] }
+```
+
+**Per-route `requires`** — `__project__` has an EMPTY graph, so a project route
+loads NO plugins by default (on-demand contracts are unbound). Opt one route into
+a plugin without making it essential by naming module domains in `requires[]`:
+
+```jsonc
+{ "method": "GET", "path": "/dashboard", "handler": "Shop\\Http\\DashboardController@index",
+  "requires": ["view.rendering"] }
+```
+
+`CompileRouteManifestStage` validates each at BOOT (unknown domain → build fails)
+and `LoadStage` seeds them into THAT request's graph only
+(`DependencyGraphCalculator::resolve($service, $additional)`). Scope isolation
+still holds — only the plugin's PUBLIC contract resolves, not its `bindInternal`.
+Choose: route `requires[]` (some routes) vs `withEssentialModules()` (every
+request) vs declaring the route in the plugin's `module.json` (the endpoint IS the
+plugin). Project routes also pass through `filters[]`; plugin routes may carry
+`requires[]` too.
+
+### Views — project-first cascade + namespacing
+
+`CompileViewManifest` → `view-manifest.php`:
+`{ global: [project dirs…, plugin dirs…], namespaces: { task: [dir] } }`.
+
+Priority: LOWER wins. PROJECT view paths default **0** (highest); PLUGIN paths
+default **100** (fallback). In `PhpViewRenderer`:
+- `render('welcome')` → walks the global cascade (project first).
+- `render('task::welcome')` → project override first (`{global}/task/welcome.php`),
+  then the `task` namespace's own dir.
+
+Declaration shapes (module.json / proj.json `views`):
+`"resources/views"` | `{ "path": …, "namespace": "task", "priority": 100, "global": true }` | list.
+A plugin only preempts the project via an explicit lower `priority` (e.g. `-1`).
+`global:false` exposes a source under its namespace only. `VIEW_PATHS` env is
+PREPENDED to the cascade (operator override; still cannot let a plugin outrank
+the project).
+
+DO: project overrides by default; use `namespace::view` to target/avoid
+collisions. DON'T: rely on plugin load order; define project routes in PHP; let
+two plugins claim the same route or unnamespaced view name.
 
 ---
 
@@ -413,6 +497,14 @@ interface SecurityLayerContract
 SecurityVerdict::allow($request)          // proceed, optional Identity attached
 SecurityVerdict::deny(401, 'reason')      // stop, return HTTP error immediately
 
+// Multi-tenant context: JwtAuthLayer sets Identity.tenantId from the signed
+// `tnt` claim (legacy `tenant`), default '' = unscoped → central connection. A
+// non-empty tenant is routed to its isolated DB by Plugins\Tenancy
+// TenantContextStage (after.load, rebinds DatabasePort). Mint a tenant-scoped
+// token only after verifying central user_tenants membership; re-check per
+// request. Control-plane plugins (User, Auth) pin to the ConnectionManager
+// default (central) so identity I/O never hits a tenant DB. See 09_SECURITY.md.
+
 // Identity — immutable, set once by your AuthModule's security layer:
 final readonly class Identity
 {
@@ -440,9 +532,10 @@ Request arrives
 1. CorrelationIdStage    — generate/propagate X-Correlation-ID (always first)
 2. SecurityStage         — run SecurityGateway, attach Identity on clear
    after.security hooks  — module stages (e.g. RateLimiterStage priority:10)
-3. ResolveStage          — route-manifest.php lookup → service name
+3. ResolveStage          — route-manifest.php lookup → service name (attaches route_entry)
 4. LoadStage             — dep graph calc → OnDemandLoader → ModuleContainer
    after.load hooks      — module stages
+   RouteFilterStage      — runs the matched route's declared filters[] (auth, throttle, …)
 5. ExecuteStage          — resolve service contract → DTO → handler → Response
    after.execute hooks   — module stages
 6. ErrorStage (wraps all) — catches all Throwables → ErrorPipeline → HTTP response
@@ -463,6 +556,50 @@ public function boot(HttpPipeline $http, ...): void
     $http->hook('after.security', RateLimiterStage::class, priority: 10);
     // Priority: 1-9 system, 10-19 security, 40-59 feature, 80-99 observability
 }
+```
+
+### TWO WAYS A STAGE RUNS — GLOBAL HOOK vs DECLARATIVE ROUTE FILTER
+
+A stage (`HttpStageContract`) runs through EXACTLY ONE mechanism — never both
+(double-registering would double-run it; e.g. a rate limiter would double-count).
+
+| Aspect | Global hook | Declarative route filter |
+|---|---|---|
+| Register | `$http->hook(slot, Stage::class, priority)` | `$http->filter('alias', Stage::class)` |
+| Runs on | EVERY request (stage self-gates internally) | ONLY routes that name the alias |
+| Declared where | the registering plugin's `boot()` | the route's `filters[]` in module.json / proj.json |
+| Use for | always-on cross-cutting (CORS, SecureHeaders) | opt-in per route (auth, throttle, hmac, shield) |
+
+Route filters are declared per route and compiled into the route manifest:
+```jsonc
+// module.json or proj.json route entry
+{ "method": "POST", "path": "/api/tasks", "handler": "...@create",
+  "filters": ["auth", "throttle:60,1"] }   // string or list; "alias:arg1,arg2" passes args
+```
+
+Any plugin publishes filter aliases from its `boot()` (the alias registry is
+shared — not owned by SecurityFilters):
+```php
+public function boot(HttpPipeline $http, ...): void
+{
+    $http->filter('json', RequireJsonStage::class);   // route opts in via "filters": ["json"]
+}
+```
+
+How a route filter executes ([RouteFilterStage] at the after.load position):
+- Reads the matched route's `filters[]` from `route_entry` (set by ResolveStage).
+- Resolves each alias via [FilterRegistry] to a stage instance (from CoreContainer
+  when bound, else `new`), and runs them as a NESTED onion around `$next` — so the
+  usual before/after semantics hold (code before `$next()` = inbound/short-circuit;
+  after = decorate Response). Filters run left-to-right in declaration order.
+- Exposes `active_filters` (alias list) + `filter_args` (parsed `:args`) as request
+  attributes, so a stage can tell it was invoked declaratively and read its config.
+- Unknown alias → throws at request time (register it in some Provider::boot()).
+
+```
+✗ Registering the SAME stage as BOTH a global hook AND a route filter — it runs twice
+✗ Naming a filter alias in a route that no Provider::boot() registered — request-time throw
+✗ Defining route filters anywhere but the route's filters[] in module.json / proj.json
 ```
 
 ---
@@ -767,9 +904,13 @@ interface DatabasePort {
     public function query(string $sql, array $params = []): array;
     public function queryOne(string $sql, array $params = []): ?array;
     public function execute(string $sql, array $params = []): int;
+    // Portable, atomic upsert (MySQL ON DUPLICATE KEY / PostgreSQL+SQLite ON CONFLICT).
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int;
+    public function lastInsertId(?string $sequence = null): string;
     public function beginTransaction(): void;
     public function commit(): void;
     public function rollback(): void;
+    public function inTransaction(): bool;
 }
 
 interface CachePort {
@@ -785,16 +926,25 @@ interface QueuePort {
 
 interface MailPort  { public function send(string|array $to, string $subject, string $view, array $data = []): void; }
 interface SmsPort   { public function send(string $to, string $message): void; }
-interface StoragePort {
-    public function store(string $contents, string $filename, string $path = ''): string;
+interface StoragePort {      // adapter: plugins/Storage (local disk OR S3/Flysystem)
+    public function store(string $contents, string $filename, string $path = '', string $visibility = 'private'): string;
+    public function storeStream($resource, string $filename, string $path = '', string $visibility = 'private'): string;
+    public function get(string $path): string;
+    public function readStream(string $path);                          // caller closes the handle
     public function temporaryUrl(string $path, int $expiresInSeconds = 3600): string;
+    public function exists(string $path): bool;
     public function delete(string $path): bool;
 }
 
 interface HttpClientPort {   // outbound HTTP for Gateways — adapter: plugins/HttpClient (cURL)
     public function request(string $method, string $url, array $options = []): HttpClientResponse;
     public function get(string $url, array $query = []): HttpClientResponse;   // + post/put/patch/delete
+    public function pending(): PendingRequestContract;   // immutable fluent builder (reachable via the PORT)
 }
+// Retries idempotent-only by default (GET/HEAD/PUT/DELETE/OPTIONS/TRACE) on transport
+// failure AND transient 5xx/429; widen with ->retryMethods([...]) / 'retry_methods'.
+// Coroutine-aware backoff. CR/LF header injection rejected; multipart names sanitized.
+// JSON bodies use JSON_THROW_ON_ERROR. Response capped at HTTP_CLIENT_MAX_RESPONSE_BYTES (32 MiB).
 
 interface SessionPort {      // request-scoped — adapter: plugins/Session (essential module)
     public function start(?string $id = null): void;
@@ -805,7 +955,22 @@ interface SessionPort {      // request-scoped — adapter: plugins/Session (ess
     public function regenerate(): void; public function invalidate(): void;
     public function shouldPersist(): bool; public function save(): void;  // lazy persistence
 }
+// Drivers: SESSION_DRIVER=file (default) | array | cookie.
+//   cookie = stateless, state stored IN the cookie (no server store; multi-node safe).
+//     Encrypted via EncryptionPort when APP_KEY/Crypto present, else HMAC-signed
+//     (SESSION_SIGNING_KEY→APP_KEY). Absolute SESSION_LIFETIME + sliding
+//     SESSION_IDLE_TIMEOUT (enforced server-side), fingerprint binding
+//     (SESSION_COOKIE_FINGERPRINT=off|ua|ip|ua,ip), compression
+//     (SESSION_COOKIE_COMPRESS), size ceiling (SESSION_COOKIE_MAX_BYTES), and boot
+//     guards SESSION_COOKIE_REQUIRE_AUTH / SESSION_COOKIE_REQUIRE_ENCRYPTION.
+//     Keep <4KB — use file/Redis for large state. See 20_FIRST_PARTY_PLUGINS.md.
 ```
+
+Controllers reach the session via the `InteractsWithSession` trait on the
+`ApiController` / `ViewController` bases (`$this->sessionGet/Put/Pull/Forget`,
+`flash`, `csrfToken`, `regenerateSession`, `invalidateSession`). It shares the
+`HasRequest` concern with `InteractsWithCookies`. Never inject `SessionPort` into a
+Service/Repository — it is a controller-layer (project) concern.
 
 ---
 
@@ -835,17 +1000,108 @@ First-party plugins (`plugins/`, namespace `Plugins\`; see `docs/ai-context/20_F
 
 | Plugin | solves | Provides | Activation |
 |---|---|---|---|
-| Storage | `storage.local` | `StoragePort` (local + S3) | on-demand |
-| View | `view.rendering` | `ViewRendererContract` (PHP templates: layouts, sections, decorators) | on-demand |
-| HttpClient | `http.client` | `HttpClientPort` (cURL) | on-demand |
-| Session / Cookie / RedisCache | session/cookies/cache | `SessionPort` / `CookieJar` / `CachePort`+`QueuePort` | essential |
-| SecurityFilters | `http.security_filters` | CORS / SecureHeaders / HMAC / auth / rate-limit stages | always-hooked |
+| Storage | `storage.local` | `StoragePort` (local disk + S3/Flysystem; atomic+fsync writes, stream up/download, signed URLs; `storage_config()` / `STORAGE_*`; empty `STORAGE_S3_KEY` ⇒ IAM role chain) | on-demand |
+| View | `view.rendering` | `ViewRendererContract` (PHP templates: layouts, sections, decorators; project-first cascade + `ns::view`) | on-demand |
+| HttpClient | `http.client` | `HttpClientPort` (cURL, fluent `pending()` via port, idempotent-safe retries, header/multipart hardening, response size cap) | on-demand |
+| Session / Cookie / RedisCache | session/cookies/cache | `SessionPort` (file/array/cookie) / `CookieJar` / `CachePort`+`QueuePort` | essential |
+| SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
 | Pageflow | `http.pageflow` | `PageflowResponder` (SPA bridge) | on-demand |
+| I18n | `i18n.translation` | `Translator` (file-based `{dir}/{locale}/{group}.php`, dotted `group.key`; `:name`/`:Name`/`:NAME` placeholders substituted longest-first via `strtr`; `choice()` pluralization `singular\|plural` or ranges `{0}`/`[1,19]`/`[20,*]`; never throws → missing key returns key). `LocaleStage` (after.load p45) negotiates `Accept-Language` vs `APP_LOCALES` + binds the global `__()`/`trans()`/`trans_choice()`/`lang_has()` helpers. Env `APP_LOCALE`/`APP_FALLBACK_LOCALE`/`APP_LOCALES`/`APP_LANG_PATH` | on-demand (`requires:[]`) |
+| SiteSEO | `seo.management` | `SeoServiceContract` — Open Graph/Twitter, Schema.org JSON-LD, sitemaps, robots.txt, sitemap ping + **IndexNow** (`indexNow()` auto-batches 10k, lazy iterable, dry-run; `SearchEngineGateway` → `HttpClientPort`). Bg job `seo.indexnow` + `UrlPublishedIntegrationEvent`/`EnqueueIndexNowListener` for index-on-publish | on-demand (`requires:["http.client"]`) |
+| Tenancy | `tenancy.routing` | Multi-tenant control plane ONLY (NOT authentication): `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `TenantAdminServiceContract`. Maps `Identity.tenantId` → isolated tenant `DatabasePort`, rebinds per request (`TenantContextStage` @ `after.load`). Fail-closed + per-tenant circuit breaker; central `tenants`/`user_tenants`/`tenant_invitations`/`audit_log`/`tenant_hosts`; database-per-tenant. Selection flow `GET /ajx/me/tenants` + `POST /ajx/tenants/{id}/select` (re-verifies membership, mints `tnt` token) — the tenant seat check lives HERE, at selection; email invitations → seat. Admin CRUD `/ajx/admin/tenants` is platform-admin-gated in BOTH the controller and `TenantAdminService` (`tenancy:admin`/`platform-admin`). Publishes the **`tenant` route filter** (`RequireTenantStage` → 409 when no active tenant) for tenant-only routes. CLI `tenants:create`/`tenants:migrate`. **Refresh tokens moved to `Plugins\Auth`** (authentication ≠ tenancy) | essential (`requires:["database.management","auth.identity","user.management"]`) |
+| User | `user.management` | GLOBAL central identity: `UserServiceContract` (register/CRUD, email verification, timing-safe + rate-limited credential verify, rehash-on-login). Login gate = verified email (`email_verified_at`); NO `status` column. Repo + transactional outbox pinned to CENTRAL; optimistic-locked; emits `user.registered/updated/deleted`; optional HIBP screening (`USER_BREACH_CHECK`). CLI `user:outbox:relay`. ALSO owns TENANT-scoped sub-resources (internal, NOT published, repos use the request/tenant `DatabasePort`, schema in `database/tenant-template/`): **feedback** (`POST/GET/PATCH /ajx/feedback`, emits `feedback.submitted`) and **settings** (one `UserSettingsService` → `GET/PUT /ajx/{profile,preferences,privacy,notification-preferences}`). Tenant routes declare `["auth","tenant"]`. Guide `docs/ai-context/24_USER.md` | on-demand (`requires:["database.management","crypto.services","cache.redis","view.rendering","http.client"]`) |
+| Auth | `auth.identity` | Authn — the ONLY home for sessions/tokens. ISSUANCE `AuthServiceContract` (JWT iss/aud/jti, RS/ES/PS signing; PATs w/ expiry+abilities; session login + remember-me `Recaller`). VERIFICATION SecurityLayers in `withSecurity([...])`: `JwtAuthLayer` (jti deny-list) + `PersonalAccessTokenLayer`; `SessionAuthStage` @ after.load p22. **`RefreshTokenServiceContract`** (revocable first-party sessions, one-time-use rotation + family reuse detection, `refresh_tokens` table, tenant-agnostic — `tnt` passthrough hint, NOT re-verified). **`AuthManager`** = named guards+providers (`config/auth.php`, filesystem-scanned `Drivers/`); `ModelUserProvider`+`AuthUserProxy` (HasApiTokens, emits `Identity`); `StatefulSessionGuard` (attempt/login/logout/once/basic/viaRemember); `Guard` projection w/ **hierarchical scope inheritance** (`ScopeInheritance` — `admin` ⊇ `admin:write`); `PasswordBroker` (CachePort reset tokens). Routes `/auth/{login,logout,me}`, `/auth/tokens` (PAT self-mgmt), `/auth/token/refresh` (transient SPA token), `/auth/refresh` (refresh rotation). Concerns `InteractsWithAuth`/`InteractsWithAuthManager`. CLI `auth:tokens:prune`. Guide `docs/ai-context/25_AUTH.md` | on-demand (SecurityLayers wired in bootstrap; `requires:["database.management","crypto.services","user.management"]`) |
+| OAuth2 | `oauth.server` | Native OAuth 2.1 + OIDC authz server (on `firebase/php-jwt`, no new vendor). Grants: authorization_code(+PKCE), client_credentials, refresh_token(rotation+family reuse-detection), password, device_code(RFC 8628). Endpoints `/oauth/{authorize,token,device_authorization,device,userinfo,introspect,revoke,jwks}` + RFC 8414/OIDC discovery. Access tokens are platform JWTs (verified by Auth `JwtAuthLayer`); scopes namespaced `scope:*` in `permissions`; `aud`=resource + `azp`=client; revoke=refresh-family + JWT `jti` deny-list. Self-service mgmt API (owner-scoped): `/oauth/clients` (CRUD, `owner_id`), `/oauth/authorized-tokens` (list/revoke granted apps), `/oauth/scopes` (`ScopeRegistry` catalogue w/ descriptions). CONTROL-PLANE → serve on apex/central host (set `TENANCY_BASE_DOMAINS` in host mode). CLI `oauth:client:{create,list,revoke,rotate}`/`oauth:prune`. Guide `docs/ai-context/26_OAUTH2.md` | on-demand (`requires:["database.management","crypto.services","user.management","view.rendering"]`) |
 
 View notes: no globals (paths/extensions/decorators/escaper injected), request-scoped
 (no cross-request leak under OpenSwoole), `SidebarManager` icon cache is instance-scoped
 not `static`. Escape ONCE — pre-escape via `setVar(..., 'html')` OR escape in-template,
 never both.
+
+Cookie notes: config in `plugins/Cookie/config/cookie.php` (env-driven; project copy at
+`projects/<name>/config/cookie.php` wins via `Paths::config()`). Env: `COOKIE_LIFETIME`
+(minutes), `COOKIE_PATH`, `COOKIE_DOMAIN`, `COOKIE_SECURE` (set `false` for local http://),
+`COOKIE_HTTP_ONLY`, `COOKIE_SAME_SITE`, `COOKIE_ENCRYPT_EXEMPT`. Helpers (autoloaded):
+`cookie_config(?key)`, `cookie(name, value, minutes?, overrides?)` → spread-ready array for
+`CookieJar::queue()` / `Response::withCookie()`. `CookieJar::queue()` attrs are nullable →
+fall back to config defaults. `.env` gotcha: a comment-only value (`KEY=  # note`) resolves
+to empty — keep inline comments on their own line.
+
+Storage notes: config in `plugins/Storage/config/storage.php` (env-driven; project copy at
+`projects/<name>/config/storage.php` wins via `Paths::config()`). Helper (autoloaded):
+`storage_config(?dotted-key, default)` — e.g. `storage_config('s3.bucket')`,
+`storage_config('local.root')`. Env: `STORAGE_DRIVER` (`local`|`s3`), `STORAGE_ROOT`,
+`STORAGE_URL_BASE`, `STORAGE_URL_SECRET`, `STORAGE_S3_BUCKET`, `STORAGE_S3_REGION`,
+`STORAGE_S3_KEY`/`STORAGE_S3_SECRET` (leave empty on EC2/ECS/EKS → AWS IAM role chain),
+`STORAGE_S3_ENDPOINT`, `STORAGE_S3_PATH_STYLE`. Local writes are atomic + fsync'd with
+short-write detection; use `storeStream()`/`readStream()` for large blobs.
+
+SEO notes (SiteSEO + `Project\Support\Seo\` + traits `InteractsWithSeo` /
+`InteractsWithGraphSeo`): sitemap / Open Graph / Schema.org JSON-LD building is
+DI-free (toolkit autoloads — NO module needed); only network actions (sitemap
+ping, IndexNow) need `requires:["seo.management"]` (→ `HttpClientPort`, never raw
+cURL). `RouteCatalog` reads the route manifest for public static pages;
+`{param}` routes are expanded from the DB by a `SitemapUrlProvider` (keyset-cursor
+GENERATOR) and stitched by `SitemapSource` (`uncoveredDynamicRoutes()` guards
+omissions). Huge sitemaps → `SitemapStreamWriter` (stream→split files+index,
+O(1) memory, 50k split, gzip) — never an array/SimpleXML DOM. Rich results →
+one `RichGraph` `@graph` per page (org→website→webPage→breadcrumb→content node,
+linked by `@id`; types incl. article/news/blog, product, book, course,
+realEstate, pageant/award/contestant, faq). `SeoHead` renders the full `<head>`
+(canonical, robots, hreflang, OG, JSON-LD). IndexNow: `indexNow()` auto-batches
+10k from a lazy iterable (`dryRun` for previews); large runs enqueue one
+`seo.indexnow` job per batch via `QueuePort` (`FileQueue` is the no-Redis
+fallback). Index-on-publish: dispatch `UrlPublishedIntegrationEvent` after
+commit → `EnqueueIndexNowListener` enqueues. EventBus resolves listeners from the
+CoreContainer (`has()` is bound-only), so the PROJECT binds the listener with its
+`QueuePort` in `bootstrap/app.php`; the plugin only declares the subscription.
+Env: `INDEXNOW_KEY` (listener no-ops without it), `INDEXNOW_LIVE`.
+
+I18n notes (`Plugins\I18n`): lang files `{APP_LANG_PATH|plugin/lang}/{locale}/{group}.php`
+`return` an array; read via dotted `group.key`. Translation NEVER throws — miss →
+fallback locale → key itself. Placeholders substitute THREE cases (`name` fills
+`:name`/`:Name`/`:NAME`) and LONGEST key first (`strtr`), so `:min` can't corrupt
+`:minutes` — do NOT regress to a per-key `str_replace` loop. `choice($key,$count)`
+splits on `|`: simple `singular|plural` (count===1→first) OR ranges `{0}`/`[1,19]`/
+`[20,*]`; `:count` auto-supplied; use ranges for 3+ forms. `has()` tests the target
+locale only (no fallback). `LocaleStage` (after.load p45, registered in
+`Provider::boot()`) negotiates the request locale from `Accept-Language` vs
+`APP_LOCALES` and binds the Translator into `Plugins\I18n\Support\Lang` for the
+request (cleared in `finally` — no Swoole leak); a `__project__` route must declare
+`"requires":["i18n.translation"]` for the stage to bind. Global helpers
+(`plugins/I18n/Support/helpers.php`, composer `files` autoload): `__()`/`trans()`/
+`trans_choice()`/`lang_has()` — degrade to key/false when unbound (CLI/worker).
+Project overrides the built-in catalogue by pointing `APP_LANG_PATH` at its own
+`resources/lang` (psp-shop ships `en`/`fr`/`es` + demo `GET /i18n`,`/i18n/advanced`).
+Read config via `env()`, never `getenv()`.
+
+## Base controllers + RequestAware
+
+Optional base classes in `projects/Http/Controllers/` (namespace `Project\`; project layer,
+NOT kernel — views/cookies are plugin concerns):
+- `ApiController` — JSON helpers (`ok`, `created`, `noContent`, `paginated`, `okOrNotFound`,
+  `notFound`, `forbidden`, `unprocessable`, `identity`); pure kernel types.
+- `ViewController` — HTML helpers (`view`, `viewNotFound`, `redirect`, `back`); injects
+  `ViewRendererContract`.
+- All four concerns compose via the shared `HasRequest` concern (flattened once, no conflict):
+  - `InteractsWithCookies` — wraps every public `CookieJar` method, no `$request` arg.
+  - `InteractsWithSession` — `sessionGet/Put/Has/Pull/Forget`, `flash`, `csrfToken`,
+    `regenerateSession`, `invalidateSession`.
+  - `InteractsWithProject` — reads `DomainContext` off the request (`attribute('domain')`):
+    `project`/`requireProject`, `projectName/Path/Face/Host`,
+    `isAdmin/isApi/isProject/isPublic/isPlatformOnly`, `projectFeatures/hasFeature/feature`.
+    Degrades to null/false/`[]` with no context (CLI/worker).
+  - `InteractsWithStorage` — wraps the on-demand `StoragePort` (local disk or S3):
+    `storage/storageAvailable`, `storeUpload`/`storeUploadAs`/`storeBase64`/`storeContents`,
+    `readFile/fileExists/fileUrl/deleteFile/copyFile/moveFile`. Route MUST declare
+    `"requires": ["storage.local"]`; read helpers return null/false when absent, write helpers throw.
+
+Both implement the kernel contract `Kernel\Http\Contracts\RequestAware`
+(`setRequest(Request): static`). `ExecuteStage` calls `setRequest($request)` then invokes a
+RequestAware action as `$method(...$routeParams)` — **without `$request`** (raw request stays
+at `$this->request`). Plain controllers keep `$method($request, ...$params)` — backward
+compatible. Don't add `$request` to a RequestAware action; don't call `CookieJar::applyTo()`
+from a controller (the flush stage does it).
 
 ---
 
@@ -934,13 +1190,57 @@ JobResult::skipped('Invoice already paid — email not needed')
 
 ---
 
+## ENTITY / CASTING / HYDRATION SUPPORT (Project layer — `Project\Support\`)
+
+DI-free, I/O-free entity-mapping helpers under `projects/Support/` — the
+GDA-compliant decomposition of the legacy `__DEV__/Entity` Active Record (the fat
+AR base was split across the layers it conflated; only the reusable casting /
+mapping / entity-mechanics live here). Import nothing outside their own
+namespace; safe from any layer.
+
+| Namespace | Class | Role |
+|---|---|---|
+| `Project\Support\Casting` | `DataCaster` | Cast ONE field, either direction (`get`=DB→PHP, `set`=PHP→DB) |
+| `Project\Support\Casting` | `TypeParser` | Type string → `{nullable, baseType, params}` |
+| `Project\Support\Casting` | `CastInterface`/`BaseCast`/`CastException` | Cast contract + identity base + errors |
+| `Project\Support\Casting\Casts` | 11 built-ins | `int integer float double string bool boolean int-bool csv array json object datetime timestamp` |
+| `Project\Support\Hydration` | `DataConverter` | Map a whole DB row ⇄ object (Repository hydrator; pools casters by types-hash) |
+| `Project\Support\Entity` | `Entity` (abstract) | Enterprise base for domain entities; `JsonSerializable`+`ArrayAccess`+`Stringable` |
+
+Type grammar: `?`=nullable, `base[param,param]`=handler+params (e.g.
+`?json[array]`, `datetime[ms]`). `bool` casts on READ only — use `int-bool` when
+the column stores `0/1` and the WRITE must emit an int. Custom casts via the
+`castHandlers` arg / entity `$customCasters` (implement `CastInterface`).
+
+`Entity` base provides: bidirectional `$casts`; **mass-assignment guard, secure
+by default** (`$guarded=['*']`, `fill()` honours `$fillable`, `forceFill()`
+bypasses); `$hidden`/`$visible` (+ runtime `makeHidden/makeVisible`);
+`__debugInfo()` redacts `$hidden` as `********`; `$appends`; `$dates`/`$dateFormat`;
+typed getters `getString/getInt/getFloat/getBool/getArray/getDate`; change
+tracking `isDirty/isClean/wasChanged/getDirty/getChanges/getOriginal/syncOriginal`;
+domain-event buffer `recordEvent()`+`releaseEvents()` (Service flushes in-tx;
+entity never dispatches); `seal()` (mutation throws); hydrator seam
+`static reconstitute(array)`+`toRawArray()`; `getKey/exists/is/isNot`, `make()`,
+`replicate()` (drops PK).
+
+Repository pattern (NOT Active Record):
+`$e = Entity::reconstitute($row)` (or `DataConverter::reconstruct`) →
+`$db->upsert($table, $e->toRawArray(onlyChanged:true), ['id'])`.
+
+Guides: `projects/Support/Casting/README.md`, `projects/Support/Entity/README.md`.
+
+---
+
 ## WHAT COPILOT MUST NEVER GENERATE FOR THIS PROJECT
 
 ```
 ✗ Use of Eloquent, Active Record, or any ORM
 ✗ Laravel facades, service providers, artisan patterns
 ✗ Symfony bundles, console components, event dispatcher
-✗ Static route definitions in PHP — routes belong in module.json only
+✗ Static route definitions in PHP — plugin routes in module.json, project routes in proj.json/withRoutes()
+✗ Relying on plugin load order for route/view resolution — it is deterministic (project-over-plugin)
+✗ Letting a plugin override a project route/view implicitly — only via an explicit lower view `priority`
+✗ Two plugins claiming the same route or the same unnamespaced view name — boot fails / use `namespace::view`
 ✗ Env vars read in modules without being declared in module.json config[]
 ✗ Business logic in Kernel classes — kernel knows nothing about any domain
 ✗ Integration events dispatched inside a try{} block — dispatch AFTER commit
@@ -951,7 +1251,12 @@ JobResult::skipped('Invoice already paid — email not needed')
 ✗ Security logic in the Application layer — it belongs in SecurityGateway layers
 ✗ Module code importing another module's internal class — use published contract
 ✗ float for money values — use Money value object with integer cents
-✗ Routes, config vars, or event declarations in PHP — they belong in module.json
+✗ Config vars or event declarations in PHP — they belong in module.json (project routes excepted: proj.json/withRoutes())
+✗ save()/delete()/find()/getRepo_() on a Project\Support\Entity\Entity — persistence is the Repository's job (DatabasePort)
+✗ Calling app()/kernel()/config() or querying the DB from inside an entity — entities never do I/O (no magic __get DB fallback)
+✗ float/getenv-style ad-hoc casting in a repository — declare $casts/types and run rows through DataCaster/DataConverter
+✗ reconstruct() relying on reflection to write private props — give the entity a static reconstitute()/toRawArray()
+✗ strict:false as a substitute for a nullable column — mark the type ?type instead
 ✗ throw inside a catch without rollbackTransaction() first
 ✗ hash comparison with === for tokens — use hash_equals() always
 ✗ Static properties in request-scoped classes — they leak between requests in Swoole

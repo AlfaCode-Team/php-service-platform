@@ -37,6 +37,12 @@ final class S3StorageAdapter implements StoragePort
     /**
      * Build from configuration. $endpoint/$usePathStyle support non-AWS,
      * S3-compatible providers (Spaces, R2, MinIO).
+     *
+     * Static credentials are passed ONLY when an explicit key is supplied. When
+     * $key is empty the 'credentials' entry is omitted entirely so the AWS SDK's
+     * default provider chain (IAM instance/task roles, env vars, SSO, ~/.aws)
+     * takes over — the standard EC2/ECS/EKS production setup. Passing empty-string
+     * credentials would override and break that chain.
      */
     public static function fromConfig(
         string $bucket,
@@ -47,10 +53,12 @@ final class S3StorageAdapter implements StoragePort
         bool $usePathStyle = false,
     ): self {
         $config = [
-            'version'     => 'latest',
-            'region'      => $region,
-            'credentials' => ['key' => $key, 'secret' => $secret],
+            'version' => 'latest',
+            'region'  => $region,
         ];
+        if ($key !== '') {
+            $config['credentials'] = ['key' => $key, 'secret' => $secret];
+        }
         if ($endpoint !== null && $endpoint !== '') {
             $config['endpoint']                 = $endpoint;
             $config['use_path_style_endpoint']  = $usePathStyle;
@@ -72,10 +80,35 @@ final class S3StorageAdapter implements StoragePort
         return $key;
     }
 
+    public function storeStream($resource, string $filename, string $path = '', string $visibility = 'private'): string
+    {
+        if (!is_resource($resource)) {
+            throw new \InvalidArgumentException('Storage(S3): storeStream expects a readable resource.');
+        }
+        $key = $this->join($path, $filename);
+        try {
+            $this->fs->writeStream($key, $resource, [
+                'visibility' => $visibility === 'public' ? Visibility::PUBLIC : Visibility::PRIVATE,
+            ]);
+        } catch (FilesystemException $e) {
+            throw new \RuntimeException("Storage(S3): unable to store [{$key}]: {$e->getMessage()}", previous: $e);
+        }
+        return $key;
+    }
+
     public function get(string $path): string
     {
         try {
             return $this->fs->read($path);
+        } catch (FilesystemException $e) {
+            throw new \RuntimeException("Storage(S3): unable to read [{$path}]: {$e->getMessage()}", previous: $e);
+        }
+    }
+
+    public function readStream(string $path)
+    {
+        try {
+            return $this->fs->readStream($path);
         } catch (FilesystemException $e) {
             throw new \RuntimeException("Storage(S3): unable to read [{$path}]: {$e->getMessage()}", previous: $e);
         }

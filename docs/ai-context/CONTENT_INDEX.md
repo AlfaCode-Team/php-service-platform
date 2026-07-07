@@ -195,12 +195,27 @@ Contains:
 - SecurityLayerContract interface
 - SecurityVerdict (allow, deny, methods)
 - Identity value object (final readonly, hasRole, hasPermission, isGuest)
-- Built-in security layers (Firewall, RateLimiter, TokenValidator)
+- Built-in security layers (Firewall, RateLimiter, CsrfToken, TokenValidator)
 - Writing a custom security layer (complete example)
 - JWT token lifecycle (login → validate → refresh)
 - Rate limit configuration (config/security.php complete example)
 - Service-level authorization pattern (RBAC + ABAC combined)
 - AI instructions for security code
+
+---
+
+## 21_CSRF.md
+**USE: When wiring CSRF protection or rendering forms / SPA tokens**
+
+Contains:
+- HMAC token model (WordPress-nonce style) vs plain double-submit — why it's stronger
+- Token format (tick | binding | action) and the seconds-based lifetime / tick math
+- CsrfTokenLayer constructor + framework-level withSecurity() wiring (all params)
+- Verification flow through the SecurityGateway (fail-closed on empty APP_KEY)
+- Static API: CsrfTokenLayer::make() (mint) and ::valid() (out-of-band check)
+- The binding gotcha (raw cookie read, raw:true cookies, mint-with-value-you-set)
+- End-to-end controller + layout `<meta>` + form/fetch example
+- AI / contributor rules for CSRF code
 
 ---
 
@@ -373,6 +388,84 @@ Contains:
 - Exception translation chain (PDOException → RepositoryException → HTTP 500)
 - What NOT to do with errors (swallowing, generic catching)
 - AI instructions for error handling code
+
+---
+
+## 23_TENANCY.md
+**USE: When working on multi-tenancy — routing, provisioning, memberships, audit**
+
+Contains:
+- What it does (database-per-tenant isolation + central control plane)
+- Identification modes: `claim` (JWT `tnt`) vs `domain` (Host), the TenantIdentifier seam
+- TenantContextStage (after.load): resolve → rebind DatabasePort per request → expose `tenant` attribute + `tenant.current` container key
+- Encrypted, user-bound tenant cookie (hint, never authority; identifier wins; revalidated)
+- Published contracts (registry, resolver, membership, invitation, refresh, hosts) + internal ports
+- Central tables + their repositories (tenants, user_tenants, invitations, refresh_tokens, tenant_hosts, audit_log)
+- Audit trail: write (AuditSink/AuditTrail) + read (AuditReader/AuditLogRepository)
+- Self-signup membership auto-assign via the `user.registered` outbox event (idempotent)
+- CLI: `tenant:create` / `tenant:delete` / `tenant:host:add` / `tenant:migrate` (wizards, compensating rollback)
+- Tenant DB user provisioning: privileges scoped to the tenant DB, MySQL accounts loopback/host-pinned (never `%`), driver-aware
+- Tenant selection + token endpoints (`/ajx/...`)
+- Absolute rules / antipatterns
+
+---
+
+## 24_USER.md
+**USE: When working on users, registration, credentials, the outbox or audit**
+
+Contains:
+- What it does (GLOBAL central identity; repositories + outbox pinned to central)
+- UserServiceContract methods (register/list/find/update/verifyEmail/verifyCredentials/delete)
+- RegisterUserDTO carries the request `tenant` attribute (opaque) for membership assignment
+- Mandatory service tx + domain/integration event pattern
+- Transactional outbox (`user_outbox`) + `user:outbox:relay` (at-least-once → idempotent listeners)
+- `UserRegisteredIntegrationEvent` carries `tenantId` (origin tenant)
+- AuditLogger: JSON line + best-effort `audit_log` persistence (tenant_id from `tenant.current`)
+- Data (users, user_outbox), routes (HTML + `/ajx/...`, anonymous register)
+- Absolute rules / antipatterns
+
+---
+
+## 25_AUTH.md
+**USE: When working on authentication, tokens, login/sessions, or SecurityLayers**
+
+Contains:
+- Issuance (`AuthServiceContract`) vs verification (SecurityLayers) split
+- `JwtAuthLayer` (single pinned algo, iss/aud/leeway, `jti` deny-list, fail-open)
+- `PersonalAccessTokenLayer` (expiry, abilities → permissions, last_used)
+- `AuthServiceContract` methods (issueJwt/revokeJwt/PAT/startSession/endSession/hash)
+- Asymmetric (RS/ES/PS) signing via `JWT_PRIVATE_KEY[_FILE]` + `kid`
+- Session auth: `SessionAuthStage` @ after.load p22; `/auth/login|logout|me`
+- CLI `auth:tokens:prune`; env (`JWT_*`, `AUTH_PAT_TABLE`); absolute rules
+
+---
+
+## 26_OAUTH2.md
+**USE: When working on third-party/delegated auth, OAuth clients, OIDC, or `/oauth/*`**
+
+Contains:
+- OAuth 2.1 + OIDC server, native on `firebase/php-jwt` (no new vendor)
+- Grants: authorization_code(+PKCE), client_credentials, refresh_token
+  (rotation + family reuse-detection), password, device_code (RFC 8628)
+- Endpoints (authorize/token/device/userinfo/introspect/revoke/jwks/discovery) + CSRF rules
+- Tokens: access = platform JWT (verified by `JwtAuthLayer`); `scope:*` namespaced
+  permissions; `aud`=resource + `azp`=client; id_token (OIDC); revoke = family + `jti`
+- CONTROL-PLANE placement (apex/central host; `TENANCY_BASE_DOMAINS`)
+- CLI `oauth:client:{create,list,revoke,rotate}` / `oauth:prune`; env; absolute rules
+
+---
+
+## 27_ENTITY_SUPPORT.md
+**USE: When mapping DB rows to entities, casting fields, or extending the `Entity` base**
+
+Contains:
+- `Project\Support` — GDA-safe decomposition of the legacy `__DEV__/Entity` Active Record
+- `DataCaster` engine (get/set directions, nullability, strictness) + `TypeParser` grammar
+- 11 built-in casts table (`int`/`bool`/`int-bool`/`csv`/`array`/`json[array]`/`datetime`/`timestamp`/…) + custom casts
+- `DataConverter` hydrator: `reconstruct()`/`extract()`/`fromDataSource()`/`toDataSource()`, caster pooling
+- `Entity` base: `$casts`/`$fillable`/`$guarded`/`$hidden`/`$appends`/`$dates`, typed getters,
+  change tracking, domain-event buffer, `seal()`, `__debugInfo()` secret redaction, `reconstitute()`/`toRawArray()`
+- Security (mass-assignment deny-by-default, redaction), Repository pattern, absolute rules
 
 ---
 

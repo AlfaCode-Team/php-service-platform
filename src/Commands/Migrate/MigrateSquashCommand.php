@@ -35,10 +35,10 @@ final class MigrateSquashCommand extends LetMigrateCommand
 
         $service = $this->service();
         $names   = array_keys($service->status());
-        $sql     = (array) $service->captureSql($names);
+        [$sql, $covered] = $service->captureSql($names);
 
         $dump = new SchemaDump($path);
-        $dump->write($sql, $names);
+        $dump->write($sql, $covered);
 
         $this->alertSuccess('Schema dump written', [
             "File: {$path}",

@@ -47,6 +47,11 @@ BindSecurityStage::class,           // 8. SecurityGateway + layers initialized
 **Rule:** Boot fails loudly with a descriptive `BootException` listing exactly what is wrong.
 It never starts with missing config, conflicting modules, or circular dependencies.
 
+**Single manifest read:** every manifest-reading stage shares ONE `ManifestReader`
+instance (constructed in `BootPipeline` and injected via each stage's `reader:` param).
+The reader caches each `module.json` by class, so a module's manifest is read from disk
+and JSON-decoded exactly once per boot — not once per stage.
+
 ---
 
 ## Kernel Lifecycle — build() vs materialize()
@@ -134,7 +139,9 @@ Services receive it via constructor injection from the scoped container.
 Request cleared by SecurityGateway
     │
     ▼
-RouteManifest::match(method, path)  → service name (e.g. 'invoice.generation')
+RouteMatcher::match(method, path)   → service name (e.g. 'invoice.generation')
+    (static routes: O(1) "METHOD /path" hash lookup; parameterized routes:
+     regex scan over ONLY the requested method's bucket — never the whole table)
     │
     ▼
 DependencyGraphCalculator::resolve(service)
@@ -142,7 +149,9 @@ DependencyGraphCalculator::resolve(service)
     │
     ▼
 OnDemandLoader::load(graph, request)
-    → Instantiate each module: register() then boot()
+    → Instantiate each module and call register() ONLY (per-request DI bindings)
+    → boot() is NOT called here — hooks + event subscriptions are wired once at
+      materialize(); per-request work stays minimal
     → Return request-scoped ModuleContainer
     │
     ▼
@@ -287,9 +296,13 @@ interface DatabasePort {
     public function query(string $sql, array $params = []): array;
     public function queryOne(string $sql, array $params = []): ?array;
     public function execute(string $sql, array $params = []): int;
+    // Portable, atomic upsert (MySQL ON DUPLICATE KEY / PostgreSQL+SQLite ON CONFLICT).
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int;
+    public function lastInsertId(?string $sequence = null): string;
     public function beginTransaction(): void;
     public function commit(): void;
     public function rollback(): void;
+    public function inTransaction(): bool;
 }
 
 interface CachePort {

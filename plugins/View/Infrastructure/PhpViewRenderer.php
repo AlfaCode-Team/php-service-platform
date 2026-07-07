@@ -45,10 +45,13 @@ final class PhpViewRenderer implements ViewRendererContract
     private array $sectionStack = [];
 
     /**
-     * @param list<string>                       $viewPaths  Absolute directories to resolve views against.
+     * @param list<string>                       $viewPaths  Global cascade — absolute dirs searched in order
+     *                                                       (project-first, then plugin fallbacks) for plain names.
      * @param list<string>                       $extensions Recognised file extensions (default ['php']).
      * @param list<class-string<ViewDecoratorContract>> $decorators Output decorators, applied in order.
      * @param (callable(string):string)|null     $escaper    HTML escaper; defaults to htmlspecialchars.
+     * @param array<string,list<string>>         $namespaces Map of "namespace" => absolute dirs, for
+     *                                                       targeted `namespace::view` resolution.
      */
     public function __construct(
         private readonly array $viewPaths,
@@ -56,6 +59,7 @@ final class PhpViewRenderer implements ViewRendererContract
         private readonly array $decorators = [],
         private readonly bool $saveData = false,
         ?callable $escaper = null,
+        private readonly array $namespaces = [],
     ) {
         $this->escaper = $escaper ?? static fn (string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
@@ -226,16 +230,17 @@ final class PhpViewRenderer implements ViewRendererContract
     private function resolveViewFile(): void
     {
         $this->renderVars['file'] = false;
+        $view = $this->renderVars['view'];
 
-        $viewIsAbsolute = str_starts_with($this->renderVars['view'], DIRECTORY_SEPARATOR);
-        if ($viewIsAbsolute && is_file($this->renderVars['view'])) {
-            $this->renderVars['file'] = $this->renderVars['view'];
+        $viewIsAbsolute = str_starts_with($view, DIRECTORY_SEPARATOR);
+        if ($viewIsAbsolute && is_file($view)) {
+            $this->renderVars['file'] = $view;
 
             return;
         }
 
-        foreach ($this->viewPaths as $path) {
-            $fullPath = realpath(rtrim($path, '/') . DIRECTORY_SEPARATOR . ltrim($this->renderVars['view'], '/'));
+        foreach ($this->candidateDirs($view, $relative) as $dir) {
+            $fullPath = realpath(rtrim($dir, '/') . DIRECTORY_SEPARATOR . ltrim($relative, '/'));
             if ($fullPath && is_file($fullPath)) {
                 $this->renderVars['file'] = $fullPath;
 
@@ -243,9 +248,47 @@ final class PhpViewRenderer implements ViewRendererContract
             }
         }
 
-        if ($this->renderVars['file'] === false) {
-            throw ViewException::forInvalidFile($this->renderVars['view']);
+        throw ViewException::forInvalidFile($view);
+    }
+
+    /**
+     * Build the ordered list of directories to search for $view, honouring the
+     * deterministic priority model:
+     *
+     *   - "namespace::view"  → the PROJECT's override of that namespace first
+     *     (each global path + "{namespace}/"), THEN the namespace's own dirs.
+     *     This lets a project override a plugin view it targets by name while
+     *     the plugin stays the canonical source.
+     *   - plain "view"       → the global cascade (project-first, plugin
+     *     fallbacks) exactly as ordered by the compiled view manifest.
+     *
+     * $relative is set by-reference to the path fragment under each dir.
+     *
+     * @param-out string $relative
+     * @return list<string>
+     */
+    private function candidateDirs(string $view, ?string &$relative): array
+    {
+        if (str_contains($view, '::')) {
+            [$namespace, $relative] = explode('::', $view, 2);
+
+            $dirs = [];
+            // Project override: drop "{namespace}/welcome.php" into any global
+            // (project-first) path to override the plugin's own view.
+            foreach ($this->viewPaths as $path) {
+                $dirs[] = rtrim($path, '/') . DIRECTORY_SEPARATOR . $namespace;
+            }
+            // The namespace's registered source dirs (the plugin itself).
+            foreach ($this->namespaces[$namespace] ?? [] as $nsPath) {
+                $dirs[] = $nsPath;
+            }
+
+            return $dirs;
         }
+
+        $relative = $view;
+
+        return $this->viewPaths;
     }
 
     private function executeView(): string
