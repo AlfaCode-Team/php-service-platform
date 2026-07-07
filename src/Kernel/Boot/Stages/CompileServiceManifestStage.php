@@ -11,9 +11,13 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Boot\{ManifestReader, ManifestWriter}
  */
 final class CompileServiceManifestStage implements BootStageContract
 {
-    /** @param list<class-string> $moduleClasses */
+    /**
+     * @param list<class-string> $moduleClasses
+     * @param list<array{method: string, path: string, handler: string}> $projectRoutes
+     */
     public function __construct(
         private readonly array $moduleClasses,
+        private readonly array $projectRoutes = [],
         private readonly ManifestReader $reader = new ManifestReader(),
     ) {}
 
@@ -42,6 +46,19 @@ final class CompileServiceManifestStage implements BootStageContract
                 'module' => $class,
                 'requires' => $moduleRequires,
                 'exposes' => $m['exposes'] ?? [],
+            ];
+        }
+
+        // Synthetic project scope — present only when the project declares its own
+        // routes (Kernel::withRoutes). It has no module and no requires, so its
+        // dependency graph is empty: the controller autowires from the request
+        // container without running any module register().
+        if ($this->projectRoutes !== []) {
+            $services[CompileRouteManifestStage::PROJECT_SCOPE] = [
+                'name' => CompileRouteManifestStage::PROJECT_SCOPE,
+                'module' => null,
+                'requires' => [],
+                'exposes' => [],
             ];
         }
 

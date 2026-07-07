@@ -1,0 +1,10 @@
+{
+  "alias": "@user",
+  "entry": "index.ts",
+  "framework": "react",
+  "surfaces": {
+    "admin": "admin/Pages",
+    "site": "site/Pages"
+  },
+  "dependencies": {}
+}

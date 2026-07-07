@@ -19,7 +19,8 @@ namespace AlfacodeTeam\PhpServicePlatform\Kernel\Ports;
  *     body?: string,
  *     timeout?: int,
  *     connect_timeout?: int,
- *     retry?: int
+ *     retry?: int,
+ *     retry_methods?: list<string>
  * }
  */
 interface HttpClientPort
@@ -43,4 +44,13 @@ interface HttpClientPort
 
     /** @param array<string, mixed> $data */
     public function delete(string $url, array $data = []): HttpClientResponse;
+
+    /**
+     * Start a fluent, immutable request builder for ergonomic call sites
+     * (headers, auth, base URL, body format, multipart file attachments).
+     *
+     * Gateways depend on this port, so the builder MUST be reachable here —
+     * never by type-hinting the concrete adapter.
+     */
+    public function pending(): PendingRequestContract;
 }

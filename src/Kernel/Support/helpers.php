@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 use AlfacodeTeam\PhpServicePlatform\Kernel\Support\Paths;
+use Project\Support\Collection;
 
 /**
  * Global path helpers.
@@ -81,5 +82,19 @@ if (!function_exists('env')) {
         $value = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
 
         return ($value === false || $value === null) ? $default : $value;
+    }
+}
+
+
+
+if (!function_exists('collect')) {
+    /**
+     * Create a Collection from the given items.
+     *
+     * @param iterable<mixed,mixed> $items
+     */
+    function collect(iterable $items = []): Collection
+    {
+        return new Collection($items);
     }
 }

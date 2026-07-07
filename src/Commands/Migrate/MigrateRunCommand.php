@@ -93,15 +93,16 @@ final class MigrateRunCommand extends LetMigrateCommand
  
         // ── --pretend: capture SQL, don't execute (no events fire) ─────
         if ($this->hasOption('pretend')) {
-            foreach ((array) $service->captureSql(array_keys($pending)) as $sql) {
+            [$sqlStatements] = $service->captureSql(array_keys($pending));
+            foreach ($sqlStatements as $sql) {
                 echo $sql . ";\n";
             }
             return self::SUCCESS;
-        } 
- 
+        }
+
         // ── lint guard (blocks destructive ops without --force) ────────
         if (!$this->hasOption('force')) {
-            $statements = $service->captureSql(array_keys($pending));
+            [$statements] = $service->captureSql(array_keys($pending));
             $linter     = new MigrationLinter();
             if ($linter->hasDanger($statements)) {
                 $this->alertError('Destructive migration blocked', array_merge(

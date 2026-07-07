@@ -10,7 +10,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Loading\{DependencyGraphCalculator, O
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\Contracts\HttpStageContract;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\Stages\{
     CorrelationIdStage, SecurityStage, ResolveStage,
-    LoadStage, ExecuteStage, ErrorStage
+    LoadStage, RouteFilterStage, ExecuteStage, ErrorStage
 };
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\SecurityGateway;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Support\Paths;
@@ -49,6 +49,9 @@ final class HttpPipeline
     private ?OnDemandLoader            $loader     = null;
     private ?RouteMatcher              $matcher    = null;
 
+    /** Alias → stage map for route-declared filters (module.json / proj.json). */
+    private FilterRegistry $filters;
+
     /** @var list<HttpStageContract>|null compiled once, reused */
     private ?array $stages = null;
 
@@ -62,6 +65,7 @@ final class HttpPipeline
         private readonly ErrorPipeline   $errorPipeline,
         private readonly array           $essentialModules = [],
     ) {
+        $this->filters = new FilterRegistry();
     }
 
     // ── Hook registration (called from Module::boot()) ────────────────────────
@@ -79,6 +83,17 @@ final class HttpPipeline
         $this->hooks[$slot][] = ['priority' => $priority, 'class' => $stageClass];
         usort($this->hooks[$slot], static fn($a, $b) => $a['priority'] <=> $b['priority']);
         $this->stages = null; // force recompilation if hooks change before first request
+    }
+
+    /**
+     * Register a route-filter alias. Routes opt into it by name via their
+     * `filters[]` in module.json / proj.json (e.g. "auth", "throttle:60").
+     *
+     * @param class-string<HttpStageContract> $stageClass
+     */
+    public function filter(string $alias, string $stageClass): void
+    {
+        $this->filters->register($alias, $stageClass);
     }
 
     // ── Request handling ─────────────────────────────────────────────────────
@@ -107,6 +122,7 @@ final class HttpPipeline
             new ResolveStage($this->matcher),
             new LoadStage($this->calculator, $this->loader),
             ...$this->resolveHook('after.load'),
+            new RouteFilterStage($this->filters, $this->core),
             new ExecuteStage(),
             ...$this->resolveHook('after.execute'),
         ]; 

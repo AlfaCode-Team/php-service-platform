@@ -41,6 +41,8 @@ final class Kernel
     private array $moduleClasses = [];
     /** @var list<class-string<ModuleContract>> */
     private array $essentialModules = [];
+    /** @var list<array{method: string, path: string, handler: string}> */
+    private array $projectRoutes = [];
     private ?ErrorPipeline $errorPipeline = null;
     private ?\Closure $errorPipelineFun = null;
     private ?string $basePath = null;
@@ -148,6 +150,35 @@ final class Kernel
     }
 
     /**
+     * Declare PROJECT-LEVEL routes — routes that belong to the project wiring
+     * layer rather than to a module's module.json. Each route maps to a project
+     * controller by its FULL class path:
+     *
+     *   ->withRoutes([
+     *       ['method' => 'GET', 'path' => '/', 'handler' => 'Shop\\Http\\HomeController@index'],
+     *   ])
+     *
+     * These are compiled into route-manifest.php under the synthetic
+     * '__project__' scope, which carries no module dependency graph. The
+     * controller is resolved (and its ports autowired) from the request-scoped
+     * container like any module controller, but no module register() runs for
+     * it. Use this for thin project pages/endpoints that orchestrate published
+     * module contracts; keep real domain logic inside modules.
+     *
+     * Appends + de-duplicates on "METHOD path" so a base builder can contribute
+     * routes that a child project extends.
+     *
+     * @param list<array{method: string, path: string, handler: string}> $routes
+     */
+    public function withRoutes(array $routes): self
+    {
+        foreach ($routes as $route) {
+            $this->projectRoutes[strtoupper($route['method'] ?? '') . ' ' . ($route['path'] ?? '')] = $route;
+        }
+        return $this;
+    }
+
+    /**
      * Build and validate the kernel. Fails fast on any misconfiguration.
      *
      * @throws \AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\BootFailureException
@@ -178,7 +209,12 @@ final class Kernel
         // deferred to materialize(), driven by whichever entry point is actually
         // used. A process that only serves HTTP never pays to build the worker
         // surface, and vice versa.
-        (new BootPipeline($this->moduleClasses, $this->core, $this->securityLayers))->run();
+        (new BootPipeline(
+            $this->moduleClasses,
+            $this->core,
+            $this->securityLayers,
+            array_values($this->projectRoutes),
+        ))->run();
 
         $this->built = true;
         return $this;

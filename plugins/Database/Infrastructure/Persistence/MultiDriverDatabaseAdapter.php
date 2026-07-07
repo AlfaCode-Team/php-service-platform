@@ -150,6 +150,76 @@ final class MultiDriverDatabaseAdapter implements DatabasePort
         return $this->run('execute', $sql, $params, static fn (PDOStatement $s): int => $s->rowCount());
     }
 
+    public function upsert(string $table, array $values, array $conflictColumns, ?array $updateColumns = null): int
+    {
+        if ($values === []) {
+            return 0;
+        }
+
+        return $this->execute(
+            $this->compileUpsert($table, array_keys($values), $conflictColumns, $updateColumns),
+            $values,
+        );
+    }
+
+    /**
+     * Compile a driver-correct upsert. MySQL uses `ON DUPLICATE KEY UPDATE` with
+     * `VALUES(col)`; PostgreSQL and SQLite use `ON CONFLICT (cols) DO UPDATE SET
+     * col = EXCLUDED.col`. Identifiers are quoted per driver. Values bind by
+     * column name (`:col`), reusing the same bindings for both INSERT and UPDATE.
+     *
+     * @param string[]      $columns
+     * @param string[]      $conflictColumns
+     * @param string[]|null $updateColumns
+     */
+    private function compileUpsert(string $table, array $columns, array $conflictColumns, ?array $updateColumns): string
+    {
+        // Default: overwrite every column that is not part of the conflict key.
+        $updateColumns ??= array_values(array_diff($columns, $conflictColumns));
+
+        $cols         = implode(', ', array_map($this->quoteId(...), $columns));
+        $placeholders = implode(', ', array_map(static fn (string $c): string => ':' . $c, $columns));
+        $insert       = "INSERT INTO {$this->quoteId($table)} ({$cols}) VALUES ({$placeholders})";
+
+        $driver = $this->driver();
+
+        if ($driver === 'mysql') {
+            if ($updateColumns === []) {
+                // No-op assignment keeps the row untouched on conflict (insert-if-absent).
+                $keep = $this->quoteId($conflictColumns[0] ?? $columns[0]);
+                return "{$insert} ON DUPLICATE KEY UPDATE {$keep} = {$keep}";
+            }
+            $set = implode(', ', array_map(
+                fn (string $c): string => "{$this->quoteId($c)} = VALUES({$this->quoteId($c)})",
+                $updateColumns,
+            ));
+            return "{$insert} ON DUPLICATE KEY UPDATE {$set}";
+        }
+
+        // PostgreSQL & SQLite — standard ON CONFLICT.
+        $target = implode(', ', array_map($this->quoteId(...), $conflictColumns));
+
+        if ($updateColumns === []) {
+            return "{$insert} ON CONFLICT ({$target}) DO NOTHING";
+        }
+
+        $set = implode(', ', array_map(
+            fn (string $c): string => "{$this->quoteId($c)} = EXCLUDED.{$this->quoteId($c)}",
+            $updateColumns,
+        ));
+        return "{$insert} ON CONFLICT ({$target}) DO UPDATE SET {$set}";
+    }
+
+    /** Quote a table/column identifier for the active driver. */
+    private function quoteId(string $identifier): string
+    {
+        // Defensive: identifiers are first-party constants, never user input, but
+        // strip the quote chars so a stray one cannot break out of the quoting.
+        return $this->driver() === 'mysql'
+            ? '`' . str_replace('`', '', $identifier) . '`'
+            : '"' . str_replace('"', '', $identifier) . '"';
+    }
+
     /**
      * Execute a prepared statement and project the result via $reader.
      *

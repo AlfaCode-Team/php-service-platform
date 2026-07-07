@@ -12,6 +12,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Boot\Stages\{
     DetectCyclesStage,
     CompileServiceManifestStage,
     CompileRouteManifestStage,
+    CompileViewManifestStage,
     CompileJobManifestStage,
     CompileCommandManifestStage,
     RegisterPortsStage,
@@ -34,22 +35,33 @@ final class BootPipeline
     /**
      * @param list<class-string> $moduleClasses
      * @param array<int, \AlfacodeTeam\PhpServicePlatform\Kernel\Security\Contracts\SecurityLayerContract> $securityLayers
+     * @param list<array{method: string, path: string, handler: string}> $projectRoutes
+     *   Project-layer routes (declared via Kernel::withRoutes), compiled into the
+     *   route manifest under the synthetic '__project__' scope with no module graph.
      */
     public function __construct(
         private readonly array $moduleClasses,
         private readonly CoreContainer $core,
         array $securityLayers = [],
+        array $projectRoutes = [],
     ) {
+        // Single reader shared across every manifest-reading stage: each module.json
+        // (the single source of truth) is read + JSON-decoded ONCE and cached, instead
+        // of once per stage. The cache populates on the first stage to touch a module
+        // and every later stage hits it.
+        $reader = new ManifestReader();
+
         $this->stages = [
-            new ValidateConfigStage($moduleClasses),         // 1. env vars present + typed
-            new DetectConflictsStage($moduleClasses),        // 2. no two modules share solves()
-            new DetectCyclesStage($moduleClasses),           // 3. no circular requires[] chains
-            new CompileServiceManifestStage($moduleClasses), // 4. dep graph → service-manifest.php
-            new CompileRouteManifestStage($moduleClasses),   // 5. routes[] → route-manifest.php
-            new CompileJobManifestStage($moduleClasses),     // 6. jobs[] → job-manifest.php
-            new CompileCommandManifestStage($moduleClasses), // 7. commands[] → command-manifest.php
-            new RegisterPortsStage($core),                   // 8. Port → Adapter bindings validated
-            new BindSecurityStage($securityLayers),          // 9. SecurityGateway layers validated
+            new ValidateConfigStage($moduleClasses, reader: $reader),         // 1. env vars present + typed
+            new DetectConflictsStage($moduleClasses, reader: $reader),        // 2. no two modules share solves()
+            new DetectCyclesStage($moduleClasses, reader: $reader),           // 3. no circular requires[] chains
+            new CompileServiceManifestStage($moduleClasses, projectRoutes: $projectRoutes, reader: $reader), // 4. dep graph → service-manifest.php
+            new CompileRouteManifestStage($moduleClasses, projectRoutes: $projectRoutes, reader: $reader),   // 5. routes[] → route-manifest.php
+            new CompileViewManifestStage($moduleClasses, reader: $reader),    // 6. views[] → view-manifest.php (project-first cascade)
+            new CompileJobManifestStage($moduleClasses, reader: $reader),     // 7. jobs[] → job-manifest.php
+            new CompileCommandManifestStage($moduleClasses, reader: $reader), // 8. commands[] → command-manifest.php
+            new RegisterPortsStage($core),                   // 9. Port → Adapter bindings validated
+            new BindSecurityStage($securityLayers),          // 10. SecurityGateway layers validated
         ];
     }
 

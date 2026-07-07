@@ -7,6 +7,7 @@ namespace Plugins\HttpClient\Infrastructure;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\GatewayException;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HttpClientPort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HttpClientResponse;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\PendingRequestContract;
 
 /**
  * cURL-based HttpClientPort adapter (GDA rewrite of the 0.3 Guzzle client).
@@ -20,14 +21,21 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HttpClientResponse;
  */
 final class CurlHttpClient implements HttpClientPort
 {
+    /** Hard ceiling on a buffered response body (bytes) — guards against OOM. */
+    private const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+
+    /** Methods safe to auto-retry (idempotent per RFC 7231). */
+    private const IDEMPOTENT_METHODS = ['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'TRACE'];
+
     public function __construct(
         private readonly int $defaultTimeout = 30,
         private readonly int $defaultConnectTimeout = 10,
         private readonly int $defaultRetry = 0,
+        private readonly int $maxResponseBytes = self::MAX_RESPONSE_BYTES,
     ) {}
 
     /** Start a fluent, immutable request builder. */
-    public function pending(): PendingRequest
+    public function pending(): PendingRequestContract
     {
         return PendingRequest::for($this)
             ->timeout($this->defaultTimeout)
@@ -53,24 +61,38 @@ final class CurlHttpClient implements HttpClientPort
         $connectTimeout = (int) ($options['connect_timeout'] ?? $this->defaultConnectTimeout);
         $retry          = max(0, (int) ($options['retry'] ?? $this->defaultRetry));
 
+        // Only idempotent verbs are auto-retried so a POST/PATCH is never
+        // silently re-executed. An explicit retry_methods override can widen it.
+        $retryMethods = $options['retry_methods'] ?? self::IDEMPOTENT_METHODS;
+        $maxRetries   = \in_array($method, $retryMethods, true) ? $retry : 0;
+
         $attempt   = 0;
         $lastError = '';
-        do {
+        while (true) {
             $result = $this->execute($method, $url, $headers, $body, $timeout, $connectTimeout);
+
             if ($result instanceof HttpClientResponse) {
-                return $result;
+                // Retry transient upstream failures (5xx / 429); return anything else.
+                $transient = $result->status() >= 500 || $result->status() === 429;
+                if (!$transient || $attempt >= $maxRetries) {
+                    return $result;
+                }
+                $lastError = "HTTP {$result->status()}";
+            } else {
+                $lastError = $result;
+                if ($attempt >= $maxRetries) {
+                    break;
+                }
             }
-            $lastError = $result;
+
             $attempt++;
-            if ($attempt <= $retry) {
-                usleep(100_000 * $attempt); // simple linear backoff
-            }
-        } while ($attempt <= $retry);
+            $this->backoff($attempt);
+        }
 
         throw new GatewayException(
             "Outbound HTTP request to [{$url}] failed: {$lastError}",
             layer:   'gateway.http_client',
-            context: ['method' => $method, 'url' => $url, 'attempts' => $attempt],
+            context: ['method' => $method, 'url' => $url, 'attempts' => $attempt + 1],
         );
     }
 
@@ -119,15 +141,27 @@ final class CurlHttpClient implements HttpClientPort
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_ACCEPT_ENCODING => '',   // negotiate + transparently decode gzip/deflate
+            CURLOPT_NOSIGNAL        => true, // no SIGALRM DNS timeout in threaded/Swoole SAPIs
         ]);
         if ($body !== null) {
             curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
         }
 
+        // Abort mid-transfer if the response body blows past the ceiling (OOM guard).
+        curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+        curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function ($ch, $dlTotal, $dlNow): int {
+            return ($dlTotal > $this->maxResponseBytes || $dlNow > $this->maxResponseBytes) ? 1 : 0;
+        });
+
         $raw = curl_exec($ch);
         if ($raw === false) {
             $error = curl_error($ch);
+            $aborted = curl_errno($ch) === CURLE_ABORTED_BY_CALLBACK;
             curl_close($ch);
+            if ($aborted) {
+                return "response exceeded {$this->maxResponseBytes} byte limit";
+            }
             return $error !== '' ? $error : 'unknown transport error';
         }
 
@@ -139,6 +173,25 @@ final class CurlHttpClient implements HttpClientPort
         $responseBody = substr((string) $raw, $headerSize);
 
         return new HttpClientResponse($status, $responseBody, $this->parseHeaders($rawHeaders));
+    }
+
+    /**
+     * Linear backoff between retries. Uses OpenSwoole's coroutine-aware sleep
+     * when running inside a coroutine so the worker is not blocked; falls back
+     * to usleep() under PHP-FPM/CLI.
+     */
+    private function backoff(int $attempt): void
+    {
+        $micros = 100_000 * $attempt;
+        if (\class_exists('\\OpenSwoole\\Coroutine') && \OpenSwoole\Coroutine::getCid() > 0) {
+            \OpenSwoole\Coroutine::usleep($micros);
+            return;
+        }
+        if (\class_exists('\\Swoole\\Coroutine') && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::usleep($micros);
+            return;
+        }
+        usleep($micros);
     }
 
     /**
@@ -163,6 +216,14 @@ final class CurlHttpClient implements HttpClientPort
         $headers = $options['headers'] ?? [];
         $lines = [];
         foreach ($headers as $name => $value) {
+            // Reject header injection — a CR/LF in a name or value could smuggle
+            // additional request headers.
+            if (preg_match('/[\r\n]/', $name . $value) === 1) {
+                throw new GatewayException(
+                    "Illegal CR/LF in outbound header [{$name}].",
+                    layer: 'gateway.http_client',
+                );
+            }
             $lines[] = $name . ': ' . $value;
         }
         return $lines;
@@ -176,7 +237,18 @@ final class CurlHttpClient implements HttpClientPort
     {
         if (isset($options['json'])) {
             $headers[] = 'Content-Type: application/json';
-            return json_encode($options['json'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '{}';
+            try {
+                return json_encode(
+                    $options['json'],
+                    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
+                );
+            } catch (\JsonException $e) {
+                throw new GatewayException(
+                    'Failed to JSON-encode outbound request body: ' . $e->getMessage(),
+                    layer:    'gateway.http_client',
+                    previous: $e,
+                );
+            }
         }
         if (isset($options['form'])) {
             $headers[] = 'Content-Type: application/x-www-form-urlencoded';
@@ -205,15 +277,17 @@ final class CurlHttpClient implements HttpClientPort
         $body     = '';
 
         foreach (($multipart['fields'] ?? []) as $name => $value) {
+            $name = $this->sanitizeParam((string) $name);
             $body .= '--' . $boundary . $crlf;
             $body .= 'Content-Disposition: form-data; name="' . $name . '"' . $crlf . $crlf;
             $body .= $value . $crlf;
         }
 
         foreach (($multipart['files'] ?? []) as $file) {
-            $filename = $file['filename'] ?? $file['name'];
+            $fieldName = $this->sanitizeParam($file['name']);
+            $filename  = $this->sanitizeParam($file['filename'] ?? $file['name']);
             $body .= '--' . $boundary . $crlf;
-            $body .= 'Content-Disposition: form-data; name="' . $file['name'] . '"; filename="' . $filename . '"' . $crlf;
+            $body .= 'Content-Disposition: form-data; name="' . $fieldName . '"; filename="' . $filename . '"' . $crlf;
             $body .= 'Content-Type: application/octet-stream' . $crlf . $crlf;
             $body .= $file['contents'] . $crlf;
         }
@@ -222,6 +296,15 @@ final class CurlHttpClient implements HttpClientPort
 
         $headers[] = 'Content-Type: multipart/form-data; boundary=' . $boundary;
         return $body;
+    }
+
+    /**
+     * Strip CR/LF and double-quotes from a multipart field/file name so it
+     * cannot break out of the Content-Disposition header (header injection).
+     */
+    private function sanitizeParam(string $value): string
+    {
+        return str_replace(["\r", "\n", '"'], '', $value);
     }
 
     /**
