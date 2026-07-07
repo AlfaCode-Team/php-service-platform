@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ["8.2", "8.3", "8.4"]
+        php: ["8.4"]   # real floor: Symfony 8 + PHPUnit require PHP >= 8.4.1
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }   # path-repo modules must be present
@@ -41,21 +41,21 @@ jobs:
         run: vendor/bin/phpunit --no-coverage
 
   # ── Native launcher: compile for every release target ──────────────────────
+  # One Linux host cross-compiles the launcher for EVERY target (Zig cross-compiles
+  # natively), using the self-hosted pinned toolchain — no dependency on upstream
+  # keeping the ephemeral dev build around.
   zig:
-    name: Zig build (${{ matrix.target }})
+    name: Zig build (all targets)
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-linux-gnu
-          - x86_64-windows-gnu
-          - aarch64-macos
-          - x86_64-macos
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
-        with: { version: "0.17.0-dev.657+2faf8debf" }
-      - name: Build launcher
+      - name: Setup Zig (self-hosted pinned toolchain)
+        run: ./tools/ci/setup-zig.sh
+        env:
+          ZIG_DIST_URL: ${{ vars.ZIG_DIST_URL }}
+      - name: Build launcher for all targets
         working-directory: tools
-        run: zig build --release=small -Dtarget=${{ matrix.target }}
+        run: |
+          for t in x86_64-linux-gnu x86_64-windows-gnu aarch64-macos x86_64-macos; do
+            echo "::group::$t"; zig build --release=small -Dtarget="$t"; echo "::endgroup::"
+          done
