@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `hkm run` / `hkm run --pick` / the registry now **self-locate the installed
+  kernel** (`/opt/hkm-kernel`, or the dir relative to the launcher) instead of
+  only using env vars or a dev tree found by walking up from the CWD. Fixes
+  "Kernel registry not found" on packaged installs and stops an installed
+  launcher from silently using a development kernel.
+- `hkm-config` is now a real config checker: it resolves the kernel, verifies
+  `vendor/autoload.php` + the projects registry, and writes/repairs
+  `HKM_KERNEL_HOME` in `~/.config/hkm/config.env`.
+- The launcher now **loads `~/.config/hkm/config.env`** at startup (real
+  environment variables still win), so `hkm-config` settings actually apply.
+
 ## [1.0.2] - 2026-07-07
 
 ### Changed

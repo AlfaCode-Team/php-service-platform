@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const registry = @import("registry.zig");
+const kernel = @import("kernel.zig");
 const util = @import("util.zig");
 
 const Dir = std.Io.Dir;
@@ -48,11 +49,12 @@ pub fn resolveAutoload(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !?[]c
     if (env.get("HKM_GLOBAL_AUTOLOAD")) |v| {
         if (v.len > 0) return v;
     }
-    if (env.get("HKM_KERNEL_HOME")) |h| {
-        if (h.len > 0) {
-            const p = try std.fmt.allocPrint(allocator, "{s}/vendor/autoload.php", .{util.trimSlash(h)});
-            if (util.fileExists(io, p)) return p;
-        }
+    // Self-locate the kernel (HKM_KERNEL_HOME, then relative to this executable,
+    // then /opt/hkm-kernel) and use its vendor/autoload.php. This makes an
+    // installed launcher use the INSTALLED kernel — not a dev tree found via PWD.
+    if (try kernel.resolveHome(allocator, io, env)) |home| {
+        const p = try std.fmt.allocPrint(allocator, "{s}/vendor/autoload.php", .{home});
+        if (util.fileExists(io, p)) return p;
     }
     if (try registry.resolvePath(allocator, io, env)) |jsonPath| {
         if (util.parentOf(util.parentOf(jsonPath))) |kernel_root| {
@@ -71,15 +73,14 @@ pub fn resolveAutoload(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !?[]c
 /// apply. Used to export HKM_KERNEL_HOME to child processes so a served app's
 /// runtime `getenv('HKM_KERNEL_HOME')` resolves.
 pub fn resolveKernelHome(allocator: std.mem.Allocator, io: Io, env: *EnvMap, autoload: ?[]const u8) !?[]const u8 {
-    if (env.get("HKM_KERNEL_HOME")) |h| {
-        if (h.len > 0) return util.trimSlash(h);
-    }
-    // <home>/vendor/autoload.php → <home>
+    // <home>/vendor/autoload.php → <home> (keeps home consistent with the autoload
+    // we already resolved).
     if (autoload) |a| {
         if (std.mem.endsWith(u8, a, "/vendor/autoload.php")) {
             if (util.parentOf(util.parentOf(a))) |home| return home;
         }
     }
+    if (try kernel.resolveHome(allocator, io, env)) |home| return home;
     if (try registry.resolvePath(allocator, io, env)) |jsonPath| {
         if (util.parentOf(util.parentOf(jsonPath))) |kernel_root| {
             if (util.dirExists(Dir.cwd(), io, kernel_root)) return kernel_root;
