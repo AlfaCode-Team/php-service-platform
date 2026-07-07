@@ -166,15 +166,20 @@ if [[ "$want" == all || "$want" == macos ]]; then
   APP="$DIST/HKM.app"
   mkdir -p "$APP/Contents/MacOS"
   stage_kernel "$APP/Contents/Resources/opt/$KERNEL_DIRNAME"
-  # `lipo` only exists on macOS; when cross-bundling on Linux ship the arm64
-  # slice and note it. On a mac runner this produces a true universal binary.
-  if command -v lipo >/dev/null; then
-    lipo -create "$DIST/_zig/mac-arm/bin/hkm"        "$DIST/_zig/mac-x86/bin/hkm"        -output "$APP/Contents/MacOS/hkm"
-    lipo -create "$DIST/_zig/mac-arm/bin/hkm-config" "$DIST/_zig/mac-x86/bin/hkm-config" -output "$APP/Contents/MacOS/hkm-config"
+  # Build a true universal Mach-O. Prefer macOS `lipo`, else LLVM's cross-platform
+  # `llvm-lipo` (available on Linux — this is what lets the whole macOS bundle be
+  # produced on an ubuntu runner). Only if neither exists do we ship arm64-only.
+  LIPO=""
+  if command -v lipo >/dev/null; then LIPO="lipo"
+  elif command -v llvm-lipo >/dev/null; then LIPO="llvm-lipo"
+  else LIPO="$(ls /usr/bin/llvm-lipo-* 2>/dev/null | sort -V | tail -1 || true)"; fi
+  if [ -n "$LIPO" ]; then
+    "$LIPO" -create "$DIST/_zig/mac-arm/bin/hkm"        "$DIST/_zig/mac-x86/bin/hkm"        -output "$APP/Contents/MacOS/hkm"
+    "$LIPO" -create "$DIST/_zig/mac-arm/bin/hkm-config" "$DIST/_zig/mac-x86/bin/hkm-config" -output "$APP/Contents/MacOS/hkm-config"
   else
     cp "$DIST/_zig/mac-arm/bin/hkm"        "$APP/Contents/MacOS/hkm"
     cp "$DIST/_zig/mac-arm/bin/hkm-config" "$APP/Contents/MacOS/hkm-config"
-    echo "note: lipo unavailable — macOS bundle is arm64-only (run on a mac for universal)"
+    echo "note: no lipo/llvm-lipo — macOS bundle is arm64-only (install llvm for universal)"
   fi
   chmod +x "$APP/Contents/MacOS/hkm" "$APP/Contents/MacOS/hkm-config"
   cat > "$APP/Contents/Info.plist" <<EOF
