@@ -29,6 +29,11 @@ pub const Entry = struct {
 ///   3. walk up from PWD for an existing `projects/projects.json` (dev: the
 ///      kernel monorepo root)
 pub fn resolvePath(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !?[]const u8 {
+    // HKM_USERDATA_DIR holds the persistent registry (projects.json + platform.json)
+    // OUTSIDE the kernel install, so a kernel update never overwrites it.
+    if (env.get("HKM_USERDATA_DIR")) |d| {
+        if (d.len > 0) return try std.fmt.allocPrint(allocator, "{s}/projects.json", .{trimSlash(d)});
+    }
     if (env.get("PSP_PROJECTS_DIR")) |d| {
         if (d.len > 0) return try std.fmt.allocPrint(allocator, "{s}/projects.json", .{trimSlash(d)});
     }
