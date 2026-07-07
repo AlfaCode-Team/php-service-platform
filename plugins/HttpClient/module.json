@@ -12,8 +12,9 @@
     "listens": [],
 
     "config": [
-        { "key": "HTTP_CLIENT_TIMEOUT",         "type": "int", "required": false },
-        { "key": "HTTP_CLIENT_CONNECT_TIMEOUT", "type": "int", "required": false },
-        { "key": "HTTP_CLIENT_RETRY",           "type": "int", "required": false }
+        { "key": "HTTP_CLIENT_TIMEOUT",             "type": "int", "required": false, "default": 30 },
+        { "key": "HTTP_CLIENT_CONNECT_TIMEOUT",     "type": "int", "required": false, "default": 10 },
+        { "key": "HTTP_CLIENT_RETRY",               "type": "int", "required": false, "default": 0 },
+        { "key": "HTTP_CLIENT_MAX_RESPONSE_BYTES",  "type": "int", "required": false, "default": 33554432 }
     ]
 }

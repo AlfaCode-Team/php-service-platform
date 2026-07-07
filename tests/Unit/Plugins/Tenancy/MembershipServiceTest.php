@@ -65,6 +65,11 @@ final class MembershipServiceTest extends TestCase
                 return ['id' => 'id', 'token' => 'tok'];
             }
             public function revokePersonalAccessToken(string $id): void {}
+            public function guard(\AlfacodeTeam\PhpServicePlatform\Kernel\Http\Request $request): \Plugins\Auth\API\Guard
+            {
+                return \Plugins\Auth\API\Guard::fromRequest($request);
+            }
+            public function tokensFor(string $userId): array { return []; }
             public function startSession(\AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort $session, string $userId, array $roles = [], array $permissions = [], string $tenantId = ''): void {}
             public function endSession(\AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort $session): void {}
             public function revokeJwt(string $jti, int $ttlSeconds = 3600): void {}

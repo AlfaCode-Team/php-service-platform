@@ -56,7 +56,7 @@ final class PageflowResponderTest extends TestCase
 
     public function test_full_load_boots_client_from_window_initial_page(): void
     {
-        $body = $this->responder()->render($this->request(), 'Users/Index', ['users' => [['id' => 1]]])->body();
+        $body = $this->responder()->render($this->request(), 'Users/Index', 'admin', ['users' => [['id' => 1]]])->body();
 
         $this->assertStringContainsString('window.initialPage =', $body);
         $this->assertStringContainsString('Users/Index', $body);
@@ -67,7 +67,7 @@ final class PageflowResponderTest extends TestCase
     {
         $response = $this->responder()->render(
             $this->request(['Accept' => 'application/json']),
-            'Users/Index',
+            'Users/Index', 'admin',
             ['a' => 1],
         );
 
@@ -79,7 +79,7 @@ final class PageflowResponderTest extends TestCase
         $responder = $this->responder();
         $responder->share('auth', ['id' => 7]);
 
-        $response = $responder->render($this->request(['X-Pageflow' => 'true']), 'Users/Index', ['a' => 1]);
+        $response = $responder->render($this->request(['X-Pageflow' => 'true']), 'Users/Index', 'admin', ['a' => 1]);
         $props = json_decode($response->body(), true)['props'];
 
         $this->assertSame(['id' => 7], $props['auth']);
@@ -91,7 +91,7 @@ final class PageflowResponderTest extends TestCase
         $responder = $this->responder();
         $responder->mergeShared(['flash' => 'old']);
 
-        $response = $responder->render($this->request(['X-Pageflow' => 'true']), 'Users/Index', ['flash' => 'new']);
+        $response = $responder->render($this->request(['X-Pageflow' => 'true']), 'Users/Index', 'admin', ['flash' => 'new']);
 
         $this->assertSame('new', json_decode($response->body(), true)['props']['flash']);
     }
@@ -104,7 +104,7 @@ final class PageflowResponderTest extends TestCase
                 'X-Pageflow-Url'  => 'https://example.com/dashboard?tab=1',
                 'X-Pageflow-Page' => 'Dashboard/Home',
             ]),
-            'Users/Index',
+            'Users/Index', 'admin',
             ['a' => 1],
             loadPage: false,
         );
@@ -116,7 +116,7 @@ final class PageflowResponderTest extends TestCase
 
     public function test_xhr_request_returns_json_page_object(): void
     {
-        $response = $this->responder()->render($this->request(['X-Pageflow' => 'true']), 'Users/Index', ['users' => [1, 2]]);
+        $response = $this->responder()->render($this->request(['X-Pageflow' => 'true']), 'Users/Index', 'admin', ['users' => [1, 2]]);
         $page = json_decode($response->body(), true);
 
         $this->assertSame('Users/Index', $page['component']);
@@ -133,7 +133,7 @@ final class PageflowResponderTest extends TestCase
                 'X-Pageflow-Partial-Data' => 'a,b',
                 'X-Pageflow-Partial-Component' => 'Users/Index',
             ]),
-            'Users/Index',
+            'Users/Index', 'admin',
             ['a' => 1, 'b' => 2, 'c' => 3],
         );
 
@@ -148,7 +148,7 @@ final class PageflowResponderTest extends TestCase
                 'X-Pageflow-Partial-Except' => 'c',
                 'X-Pageflow-Partial-Component' => 'Users/Index',
             ]),
-            'Users/Index',
+            'Users/Index', 'admin',
             ['a' => 1, 'b' => 2, 'c' => 3],
         );
 
@@ -163,7 +163,7 @@ final class PageflowResponderTest extends TestCase
                 'X-Pageflow-Partial-Data' => 'a',
                 'X-Pageflow-Partial-Component' => 'Other',
             ]),
-            'Users/Index',
+            'Users/Index', 'admin',
             ['a' => 1, 'b' => 2],
         );
 
@@ -224,7 +224,7 @@ final class PageflowResponderTest extends TestCase
         });
 
         $this->assertTrue($reached);
-        $props = json_decode($responder->render($request, 'Users/Index', [])->body(), true)['props'];
+        $props = json_decode($responder->render($request, 'Users/Index', 'admin', [])->body(), true)['props'];
         $this->assertSame(['id' => 42], $props['auth']);
     }
 
@@ -243,7 +243,7 @@ final class PageflowResponderTest extends TestCase
 
         $request = $this->request(['X-Pageflow' => 'true']);
         $sharer->share($request, $responder);
-        $props = json_decode($responder->render($request, 'Users/Index', [])->body(), true)['props'];
+        $props = json_decode($responder->render($request, 'Users/Index', 'admin', [])->body(), true)['props'];
 
         $this->assertSame('HKM', $props['appName']);
         $this->assertSame(3, $props['cartCount']);
@@ -261,7 +261,7 @@ final class PageflowResponderTest extends TestCase
         $responder = $this->responder();
         $request = $this->request(['X-Pageflow' => 'true'], path: '/blog');
         (new RegistryPageflowSharer())->share($request, $responder);
-        $props = json_decode($responder->render($request, 'Blog/Index', [])->body(), true)['props'];
+        $props = json_decode($responder->render($request, 'Blog/Index', 'admin', [])->body(), true)['props'];
 
         $this->assertSame('2026', $props['year']);
         $this->assertSame('HKM', $props['appName']);

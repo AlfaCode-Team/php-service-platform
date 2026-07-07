@@ -10,6 +10,11 @@
     "views": "resources/views",
 
     "routes": [
+        { "method": "GET", "path": "/admin/users",      "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserFlowController@adminIndex", "requires": ["http.pageflow"], "filters": ["auth"] },
+        { "method": "GET", "path": "/admin/users/{id}", "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserFlowController@adminShow",  "requires": ["http.pageflow"], "filters": ["auth"] },
+        { "method": "GET", "path": "/register",         "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserFlowController@register",   "requires": ["http.pageflow"] },
+        { "method": "GET", "path": "/account/profile",  "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserFlowController@profile",    "requires": ["http.pageflow"], "filters": ["auth"] },
+
         { "method": "GET",    "path": "/users",             "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserPageController@index"  },
         { "method": "GET",    "path": "/users/create",      "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserPageController@create" },
         { "method": "GET",    "path": "/users/{id}/edit",   "handler": "Plugins\\User\\Infrastructure\\Http\\Controllers\\UserPageController@edit"   },

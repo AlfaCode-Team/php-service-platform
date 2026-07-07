@@ -12,6 +12,14 @@ interface RefreshTokenStore
 
     public function findByHash(string $tokenHash): ?RefreshToken;
 
+    /**
+     * Active (non-revoked, non-expired) refresh tokens for a user — the apps the
+     * user has authorized. Powers the self-service authorized-tokens endpoint.
+     *
+     * @return list<RefreshToken>
+     */
+    public function findByUser(string $userId): array;
+
     /** Atomically revoke if currently active; false when it was already revoked. */
     public function revokeIfActive(string $tokenId): bool;
 

@@ -9,7 +9,11 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Response;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\Contracts\HttpStageContract;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
+use Plugins\Auth\API\Contracts\AuthServiceContract;
 use Plugins\Auth\Application\Services\AuthService;
+use Plugins\Auth\Domain\ValueObjects\Recaller;
+use Plugins\Cookie\Infrastructure\CookieJar;
+use Plugins\User\API\Contracts\UserServiceContract;
 
 /**
  * SessionAuthStage — stateful authentication for browser (web + AJAX) requests.
@@ -34,6 +38,10 @@ final class SessionAuthStage implements HttpStageContract
      */
     public const PRIORITY = 22;
 
+    /** Encrypted "remember me" cookie name and its lifetime (30 days). */
+    public const RECALLER_COOKIE = 'remember_web';
+    public const RECALLER_TTL    = 60 * 60 * 24 * 30;
+
     public function handle(Request $request, callable $next): Response
     {
         // A token already authenticated this request — do not override it.
@@ -54,7 +62,13 @@ final class SessionAuthStage implements HttpStageContract
 
         $userId = (string) $session->get(AuthService::SESSION_USER, '');
         if ($userId === '') {
-            return $next($request); // anonymous session — stay guest
+            // No live session — try to resurrect one from a "remember me" cookie.
+            $resurrected = $this->fromRecaller($request, $container, $session);
+            if ($resurrected !== null) {
+                $request = $resurrected;
+            }
+
+            return $next($request);
         }
 
         $identity = new Identity(
@@ -65,7 +79,90 @@ final class SessionAuthStage implements HttpStageContract
             tokenType:   'session',
         );
 
-        return $next($request->withIdentity($identity));
+        return $next($this->attach($request, $container, $identity));
+    }
+
+    /**
+     * Attach a session Identity to BOTH the request and the request-scoped
+     * container.
+     *
+     * Why the container too: services inject Identity from the ModuleContainer,
+     * which OnDemandLoader binds at LoadStage from the PRE-auth (guest) request —
+     * that runs before this after.load stage. Setting it only on the request
+     * would authenticate route filters (the `auth` alias) but leave the service
+     * layer seeing a guest, so service-level permission checks would wrongly
+     * fail. Rebinding here is safe: no service resolves Identity until
+     * ExecuteStage, which runs after this stage. Token auth is unaffected — it
+     * attaches its Identity in the SecurityGateway, before LoadStage, so the
+     * container already holds the correct one.
+     */
+    private function attach(Request $request, $container, Identity $identity): Request
+    {
+        $container->instance(Identity::class, $identity);
+
+        return $request->withIdentity($identity);
+    }
+
+    /**
+     * Validate a "remember me" recaller cookie and, on success, re-open a full
+     * session login. Returns the request carrying the rebuilt Identity, or null
+     * when there is no valid recaller (request left untouched, stays guest).
+     *
+     * Security: the token is matched by its stored hash, and on EVERY successful
+     * use it is rotated (a fresh token + cookie) so a stolen cookie is a
+     * single-use window — the old __DEV__ remember-me guarantee, GDA-native.
+     */
+    private function fromRecaller(Request $request, $container, SessionPort $session): ?Request
+    {
+        if (!$container->has(CookieJar::class)
+            || !$container->has(UserServiceContract::class)
+            || !$container->has(AuthServiceContract::class)) {
+            return null;
+        }
+
+        $cookies = $container->make(CookieJar::class);
+        $raw     = $cookies instanceof CookieJar ? $cookies->read($request, self::RECALLER_COOKIE) : null;
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+
+        $recaller = new Recaller($raw);
+        if (!$recaller->valid()) {
+            return null;
+        }
+
+        $users = $container->make(UserServiceContract::class);
+        $user  = $users instanceof UserServiceContract ? $users->findByRememberToken($recaller->token()) : null;
+
+        // The cookie's id must match the token owner — defence against a
+        // mismatched/forged pairing.
+        if ($user === null || $user->id !== $recaller->id()) {
+            return null;
+        }
+
+        // Re-establish the stateful session (rotates the session id) and rotate
+        // the remember token + cookie so this recaller can't be replayed.
+        $auth = $container->make(AuthServiceContract::class);
+        if ($auth instanceof AuthServiceContract) {
+            $auth->startSession($session, $user->id);
+        } else {
+            $session->put(AuthService::SESSION_USER, $user->id);
+        }
+
+        $fresh = $users->cycleRememberToken($user->id);
+        $cookies->queue(
+            self::RECALLER_COOKIE,
+            Recaller::make($user->id, $fresh)->value(),
+            maxAge: self::RECALLER_TTL,
+        );
+
+        return $this->attach($request, $container, new Identity(
+            userId:      $user->id,
+            tenantId:    '',
+            roles:       [],
+            permissions: [],
+            tokenType:   'session',
+        ));
     }
 
     /** @return list<string> */

@@ -66,7 +66,9 @@
             "Plugins\\": "plugins/"
         },
         "files": [
-            "src/Kernel/Support/helpers.php"
+            "src/Kernel/Support/helpers.php",
+            "plugins/I18n/Support/helpers.php",
+            "plugins/Auth/Support/helpers.php"
         ]
     },
     "bin": [

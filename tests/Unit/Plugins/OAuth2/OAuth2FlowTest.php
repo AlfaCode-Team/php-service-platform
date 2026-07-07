@@ -329,12 +329,28 @@ final class InMemoryClientStore implements ClientStore
 
     public function find(string $clientId): ?Client { return $this->byId[$clientId] ?? null; }
 
-    public function create(string $id, string $name, ?string $secretHash, array $redirectUris, array $grantTypes, array $scopes, bool $confidential): void
+    public function create(string $id, string $name, ?string $secretHash, array $redirectUris, array $grantTypes, array $scopes, bool $confidential, ?string $ownerId = null): void
     {
-        $this->byId[$id] = Client::of($id, $name, $secretHash, $redirectUris, $grantTypes, $scopes, $confidential);
+        $this->byId[$id] = Client::of($id, $name, $secretHash, $redirectUris, $grantTypes, $scopes, $confidential, false, $ownerId);
     }
 
     public function all(): array { return array_values($this->byId); }
+
+    public function findByOwner(string $ownerId): array
+    {
+        return array_values(array_filter($this->byId, static fn(Client $c): bool => $c->ownerId() === $ownerId));
+    }
+
+    public function updateDetails(string $id, string $name, array $redirectUris, array $scopes): bool
+    {
+        $c = $this->byId[$id] ?? null;
+        if ($c === null) {
+            return false;
+        }
+        $this->byId[$id] = Client::of($c->id, $name, $c->secretHash, $redirectUris, $c->grantTypes, $scopes, $c->confidential, $c->revoked, $c->ownerId());
+
+        return true;
+    }
 
     public function revoke(string $id): bool
     {
@@ -421,6 +437,19 @@ final class InMemoryRefreshTokenStore implements RefreshTokenStore
         return RefreshToken::of($t->id, $t->familyId, $t->clientId, $t->userId, $t->scopes, $t->expiresAt, $row['revoked']);
     }
 
+    public function findByUser(string $userId): array
+    {
+        $out = [];
+        foreach ($this->byHash as $row) {
+            $t = $row['token'];
+            if ($t->userId === $userId && !$row['revoked'] && !$t->isExpired()) {
+                $out[] = $t;
+            }
+        }
+
+        return $out;
+    }
+
     public function revokeIfActive(string $tokenId): bool
     {
         $hash = $this->idToHash[$tokenId] ?? null;
@@ -458,6 +487,11 @@ final class InMemoryScopeStore implements ScopeStore
     public function exists(string $scope): bool { return in_array($scope, $this->scopes, true); }
 
     public function all(): array { return $this->scopes; }
+
+    public function describe(): array
+    {
+        return array_fill_keys($this->scopes, '');
+    }
 }
 
 final class InMemoryDeviceCodeStore implements DeviceCodeStore

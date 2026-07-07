@@ -39,6 +39,7 @@ final class ClientRepository implements ClientStore
             scopes:       $this->decodeList($row['scopes'] ?? null),
             confidential: (bool) $row['confidential'],
             revoked:      (bool) $row['revoked'],
+            ownerId:      isset($row['owner_id']) ? (string) $row['owner_id'] : null,
         );
     }
 
@@ -50,11 +51,12 @@ final class ClientRepository implements ClientStore
         array $grantTypes,
         array $scopes,
         bool $confidential,
+        ?string $ownerId = null,
     ): void {
         try {
             $this->db->execute(
-                'INSERT INTO oauth_clients (id, name, secret_hash, redirect_uris, grant_types, scopes, confidential, revoked, created_at)
-                 VALUES (:id, :name, :secret, :redirects, :grants, :scopes, :conf, :revoked, :created)',
+                'INSERT INTO oauth_clients (id, name, secret_hash, redirect_uris, grant_types, scopes, confidential, revoked, owner_id, created_at)
+                 VALUES (:id, :name, :secret, :redirects, :grants, :scopes, :conf, :revoked, :owner, :created)',
                 [
                     'id'        => $id,
                     'name'      => $name,
@@ -64,6 +66,7 @@ final class ClientRepository implements ClientStore
                     'scopes'    => json_encode(array_values($scopes)),
                     'conf'      => $confidential ? 1 : 0,
                     'revoked'   => 0,
+                    'owner'     => $ownerId,
                     'created'   => (new \DateTimeImmutable())->format('Y-m-d H:i:s'),
                 ],
             );
@@ -81,7 +84,45 @@ final class ClientRepository implements ClientStore
             throw new RepositoryException('Failed to list OAuth clients', layer: 'repository.oauth', previous: $e);
         }
 
-        return array_map(fn (array $row): Client => Client::of(
+        return array_map($this->hydrate(...), $rows);
+    }
+
+    /** @return list<Client> */
+    public function findByOwner(string $ownerId): array
+    {
+        try {
+            $rows = $this->db->query(
+                'SELECT * FROM oauth_clients WHERE owner_id = :owner ORDER BY created_at DESC',
+                ['owner' => $ownerId],
+            );
+        } catch (\PDOException $e) {
+            throw new RepositoryException('Failed to list OAuth clients', layer: 'repository.oauth', previous: $e);
+        }
+
+        return array_map($this->hydrate(...), $rows);
+    }
+
+    public function updateDetails(string $id, string $name, array $redirectUris, array $scopes): bool
+    {
+        try {
+            return $this->db->execute(
+                'UPDATE oauth_clients SET name = :name, redirect_uris = :redirects, scopes = :scopes WHERE id = :id',
+                [
+                    'name'      => $name,
+                    'redirects' => json_encode(array_values($redirectUris)),
+                    'scopes'    => json_encode(array_values($scopes)),
+                    'id'        => $id,
+                ],
+            ) === 1;
+        } catch (\PDOException $e) {
+            throw new RepositoryException('Failed to update OAuth client', layer: 'repository.oauth', previous: $e);
+        }
+    }
+
+    /** @param array<string,mixed> $row */
+    private function hydrate(array $row): Client
+    {
+        return Client::of(
             id:           (string) $row['id'],
             name:         (string) $row['name'],
             secretHash:   $row['secret_hash'] !== null && $row['secret_hash'] !== '' ? (string) $row['secret_hash'] : null,
@@ -90,7 +131,8 @@ final class ClientRepository implements ClientStore
             scopes:       $this->decodeList($row['scopes'] ?? null),
             confidential: (bool) $row['confidential'],
             revoked:      (bool) $row['revoked'],
-        ), $rows);
+            ownerId:      isset($row['owner_id']) ? (string) $row['owner_id'] : null,
+        );
     }
 
     public function revoke(string $id): bool

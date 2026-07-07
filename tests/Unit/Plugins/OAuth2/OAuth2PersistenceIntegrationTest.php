@@ -189,7 +189,7 @@ final class OAuth2PersistenceIntegrationTest extends TestCase
         $this->db->execute('CREATE TABLE oauth_scopes (id TEXT PRIMARY KEY, description TEXT, created_at TEXT)');
         $this->db->execute(
             'CREATE TABLE oauth_clients (id TEXT PRIMARY KEY, name TEXT, secret_hash TEXT, redirect_uris TEXT,
-             grant_types TEXT, scopes TEXT, confidential INTEGER, revoked INTEGER, created_at TEXT)'
+             grant_types TEXT, scopes TEXT, confidential INTEGER, revoked INTEGER, owner_id TEXT, created_at TEXT)'
         );
         $this->db->execute(
             'CREATE TABLE oauth_auth_codes (id TEXT PRIMARY KEY, code_hash TEXT UNIQUE, client_id TEXT, user_id TEXT,
