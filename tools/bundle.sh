@@ -153,7 +153,9 @@ fi
 exit 0
 EOF
   chmod +x "$P/DEBIAN/prerm"
-  dpkg-deb --build "$P" >/dev/null
+  # --root-owner-group: force root:root ownership so the .deb installs files as
+  # root (avoids the "unusual owner 1000:1000" warning when building as a user).
+  dpkg-deb --root-owner-group --build "$P" >/dev/null
   say "wrote $DIST/${PKG}.deb"
 fi
 
