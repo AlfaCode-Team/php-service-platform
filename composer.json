@@ -69,6 +69,11 @@
             "src/Kernel/Support/helpers.php",
             "plugins/I18n/Support/helpers.php",
             "plugins/Auth/Support/helpers.php"
+        ],
+        "exclude-from-classmap": [
+            "**/database/seeders/**",
+            "**/database/migrations/**",
+            "**/database/factories/**"
         ]
     },
     "bin": [
