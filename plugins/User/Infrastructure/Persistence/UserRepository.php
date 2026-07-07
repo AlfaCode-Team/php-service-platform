@@ -83,6 +83,35 @@ final class UserRepository implements UserStore
         return $row === null ? null : self::hydrate($row);
     }
 
+    /** Look up an active user by the SHA-256 hash of a "remember me" token. */
+    public function findByRememberToken(string $tokenHash): ?User
+    {
+        // An empty hash must never match — guard so a NULL/blank column can't
+        // authenticate a forged empty cookie.
+        if ($tokenHash === '') {
+            return null;
+        }
+
+        $row = $this->fetchBy('remember_token', $tokenHash);
+
+        return $row === null ? null : self::hydrate($row);
+    }
+
+    /** Persist (or clear, with null) the remember-token hash for a user. */
+    public function updateRememberToken(string $userId, ?string $tokenHash): void
+    {
+        try {
+            $this->db->execute(
+                'UPDATE ' . self::TABLE . '
+                 SET remember_token = :token, updated_at = :now
+                 WHERE user_id = :user_id AND deleted_at IS NULL',
+                ['token' => $tokenHash, 'now' => self::now(), 'user_id' => $userId],
+            );
+        } catch (\Throwable $e) {
+            throw new RepositoryException('Failed to update remember token.', layer: 'repository.user', previous: $e);
+        }
+    }
+
     /** Look up by username OR email — used for credential verification/login. */
     public function findByIdentifier(string $identifier): ?User
     {

@@ -120,6 +120,9 @@ pub fn confirm(io: Io, label: []const u8, default_yes: bool) bool {
 /// first option when stdin is not a TTY (pipes / CI).
 pub fn select(label: []const u8, items: []const []const u8) ?usize {
     if (items.len == 0) return null;
+    // Raw-mode arrow-key selection needs POSIX termios; Windows has no
+    // equivalent here, so behave as the non-TTY fallback (choose first item).
+    if (@import("builtin").os.tag == .windows) return 0;
     const tty = std.posix.STDIN_FILENO;
 
     const orig = std.posix.tcgetattr(tty) catch return 0; // not a TTY → first item

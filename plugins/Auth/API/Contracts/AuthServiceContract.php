@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Plugins\Auth\API\Contracts;
 
+use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Request;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort;
+use Plugins\Auth\API\DTOs\TokenDTO;
+use Plugins\Auth\API\Guard;
 
 /**
  * Published authentication contract.
@@ -14,6 +17,22 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort;
  */
 interface AuthServiceContract
 {
+    /**
+     * Project the request's resolved Identity into a read-only Guard — the
+     * GDA-native replacement for the old AuthManager's named guards. The
+     * SecurityGateway chain already decided who authenticated and how; this just
+     * exposes it ergonomically ($guard->check()/id()/via()/hasScope()).
+     */
+    public function guard(Request $request): Guard;
+
+    /**
+     * List the personal access tokens issued to a user (newest first), without
+     * any secret material. Replaces the old HasApiTokens `tokens()` accessor.
+     *
+     * @return list<TokenDTO>
+     */
+    public function tokensFor(string $userId): array;
+
     /**
      * Issue a signed JWT for a user.
      *

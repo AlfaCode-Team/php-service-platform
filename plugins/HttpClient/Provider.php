@@ -50,9 +50,10 @@ final class Provider implements ModuleContract
         }
 
         $container->bind(HttpClientPort::class, static fn() => new CurlHttpClient(
-            defaultTimeout:        (int) (env('HTTP_CLIENT_TIMEOUT') ?: 30),
-            defaultConnectTimeout: (int) (env('HTTP_CLIENT_CONNECT_TIMEOUT') ?: 10),
-            defaultRetry:          (int) (env('HTTP_CLIENT_RETRY') ?: 0),
+            defaultTimeout:        (int) (env('HTTP_CLIENT_TIMEOUT',30)),
+            defaultConnectTimeout: (int) (env('HTTP_CLIENT_CONNECT_TIMEOUT', 10)),
+            defaultRetry:          (int) (env('HTTP_CLIENT_RETRY', 0)),
+            maxResponseBytes:      (int) (env('HTTP_CLIENT_MAX_RESPONSE_BYTES', 33_554_432)),
         ));
     }
 

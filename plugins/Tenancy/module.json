@@ -16,21 +16,25 @@
     "TenantConnectionResolverContract",
     "MembershipServiceContract",
     "InvitationServiceContract",
-    "RefreshTokenServiceContract",
     "TenantAdminServiceContract"
   ],
 
   "routes": [
     { "method": "GET",  "path": "/tenants",
-      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@index" },
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@index",
+      "requires": ["http.pageflow"] },
     { "method": "GET",  "path": "/tenants/manage",
-      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@manage" },
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@manage",
+      "requires": ["http.pageflow"] },
     { "method": "GET",  "path": "/tenants/create",
-      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@create" },
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@create",
+      "requires": ["http.pageflow"] },
     { "method": "GET",  "path": "/tenants/{tenantId}/edit",
-      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@edit" },
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@edit",
+      "requires": ["http.pageflow"] },
     { "method": "GET",  "path": "/tenant/hosts",
-      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@hosts" },
+      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantPageController@hosts",
+      "requires": ["http.pageflow"] },
 
     { "method": "GET",    "path": "/ajx/admin/tenants",
       "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@index",
@@ -57,10 +61,6 @@
     { "method": "POST", "path": "/ajx/invitations/accept",
       "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\InvitationController@accept",
       "filters": ["auth"] },
-    { "method": "POST", "path": "/ajx/auth/refresh",
-      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\AuthTokenController@refresh" },
-    { "method": "POST", "path": "/ajx/auth/logout",
-      "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\AuthTokenController@logout" },
 
     { "method": "GET",  "path": "/ajx/tenant/hosts",
       "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantHostController@index",
@@ -94,8 +94,6 @@
     { "key": "TENANCY_BREAKER_COOLDOWN", "type": "int", "required": false },
     { "key": "TENANCY_BREAKER_WINDOW", "type": "int", "required": false },
     { "key": "TENANCY_TEMPLATE_PATH", "type": "string", "required": false },
-    { "key": "TENANCY_TOKEN_TTL", "type": "int", "required": false },
-    { "key": "TENANCY_REFRESH_TTL", "type": "int", "required": false },
-    { "key": "TENANCY_ACCESS_TTL", "type": "int", "required": false }
+    { "key": "TENANCY_TOKEN_TTL", "type": "int", "required": false }
   ]
 }

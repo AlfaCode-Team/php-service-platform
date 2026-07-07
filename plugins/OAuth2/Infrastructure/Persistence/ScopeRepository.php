@@ -37,4 +37,21 @@ final class ScopeRepository implements ScopeStore
 
         return array_map(static fn (array $r): string => (string) $r['id'], $rows);
     }
+
+    /** @return array<string,string> */
+    public function describe(): array
+    {
+        try {
+            $rows = $this->db->query('SELECT id, description FROM oauth_scopes ORDER BY id');
+        } catch (\PDOException $e) {
+            throw new RepositoryException('Failed to list scopes', layer: 'repository.oauth', previous: $e);
+        }
+
+        $out = [];
+        foreach ($rows as $r) {
+            $out[(string) $r['id']] = (string) ($r['description'] ?? '');
+        }
+
+        return $out;
+    }
 }

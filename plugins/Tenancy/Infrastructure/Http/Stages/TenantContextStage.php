@@ -120,7 +120,10 @@ final class TenantContextStage implements HttpStageContract
         // Expose the resolved tenant to controllers without re-identifying it.
         $request = $request->withAttribute('tenant', $tenantId);
 
-        $container->instance('tenant.current', $tenantId); // a plain string, no Tenancy import
+        // Expose the resolved tenant id (a scalar) into the container too. Use a
+        // closure bind, not instance(): the kernel's ModuleContainer::instance()
+        // requires an OBJECT, so binding a bare string there throws a TypeError.
+        $container->bind('tenant.current', static fn(): string => $tenantId);
 
         // Remember the active tenant for next time — encrypted + bound to this
         // user so it cannot be replayed across users. Still a hint: every request
