@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Scaffolded `.env` (which holds the generated `APP_KEY`) is now written
+  `chmod 600` (owner-only); `~/.config/hkm/config.env` too.
+- Debug output is force-disabled when `APP_ENV=production`, even if `APP_DEBUG`
+  was left `true` in a mis-set `.env` — production never leaks internals.
+- New projects ship an `app/public/.htaccess`: denies dotfiles (`.env`, `.git`),
+  disables directory listing, drops `X-Powered-By`, adds baseline security
+  headers, and routes through the single front controller.
+
 ### Added
 - `HKM_USERDATA_DIR` — relocate the persistent registry (`projects.json` +
   `platform.json`) outside the kernel install so a kernel update never

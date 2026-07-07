@@ -55,6 +55,7 @@ const templates = [_]Template{
     .{ .dest = "app/bootstrap/kernel-autoload.php", .src = "app/bootstrap/kernel-autoload.php" },
     .{ .dest = "app/bootstrap/app.php", .src = "app/bootstrap/app.php" },
     .{ .dest = "app/public/index.php", .src = "app/public/index.php" },
+    .{ .dest = "app/public/.htaccess", .src = "app/public/.htaccess" },
     .{ .dest = "app/swoole/index.php", .src = "app/swoole/index.php" },
     .{ .dest = "app/cli/run.php", .src = "app/cli/run.php" },
     .{ .dest = "app/worker/run.php", .src = "app/worker/run.php" },
@@ -333,7 +334,11 @@ fn generateAppKey(allocator: std.mem.Allocator, io: Io, opts: Options) !void {
     }
 
     try Dir.cwd().writeFile(io, .{ .sub_path = env_path, .data = out.items });
-    prompt.ok("Generated APP_KEY in .env");
+
+    // The .env now holds the freshly generated APP_KEY (and will hold DB creds,
+    // JWT secrets, …). Lock it down to owner-only so it is never world-readable.
+    util.chmod600(io, env_path);
+    prompt.ok("Generated APP_KEY in .env (chmod 600)");
 }
 
 /// Run `composer install` inside the new project. Inherits stdio so the user
