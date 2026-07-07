@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New projects also ship a full Apache virtual-host sample
+  (`app/apache.conf.example`) alongside the nginx one — DocumentRoot pinned to
+  `app/public`, dotfiles denied, only `index.php` executable, security headers.
+
 ## [1.0.4] - 2026-07-08
 
 ### Security
