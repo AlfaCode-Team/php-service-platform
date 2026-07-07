@@ -128,6 +128,14 @@ Description: PhpServicePlatform (HKM) kernel and native launcher
  runtime matches this machine's PHP. Needs network access during install.
  Run 'hkm doctor' afterwards to verify PHP and required extensions.
 EOF
+  # conffiles: the project registry + platform map are USER DATA. Marking them as
+  # dpkg conffiles makes upgrades PRESERVE the user's versions instead of
+  # overwriting them with the packaged defaults. (Relocate entirely with
+  # HKM_USERDATA_DIR if you'd rather keep them outside /opt.)
+  cat > "$P/DEBIAN/conffiles" <<EOF
+/opt/${KERNEL_DIRNAME}/projects/projects.json
+/opt/${KERNEL_DIRNAME}/projects/platform.json
+EOF
   # postinst: build vendor/ on the target via the shipped install.sh helper.
   cat > "$P/DEBIAN/postinst" <<EOF
 #!/bin/sh
