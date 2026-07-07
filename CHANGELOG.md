@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `.deb` marks `projects.json` + `platform.json` as dpkg conffiles, so an
   in-place upgrade preserves a user's registrations even without relocating.
 
+### Changed
+- `hkm-config` now sets up the FULL required environment in one run: it
+  resolves + pins `HKM_KERNEL_HOME`, and creates a persistent userdata dir
+  (`XDG_DATA_HOME/hkm` or `~/.local/share/hkm`), migrates any existing
+  registry into it, and pins `HKM_USERDATA_DIR`.
+
 ## [1.0.3] - 2026-07-08
 
 ### Changed
