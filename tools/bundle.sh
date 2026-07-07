@@ -46,7 +46,7 @@ MODULES="${MODULES:-bundle}"
 # vendor/ is ALWAYS excluded — composer resolves it on the target. Everything
 # staged is git-tracked ⇒ no gitignored junk (.claude, node_modules, var/cache,
 # submodule vendors) can leak.
-SRC_PATHS="src plugins projects composer.json composer.lock bin/psp README.md LICENSE"
+SRC_PATHS="src plugins projects templates composer.json composer.lock bin/psp README.md LICENSE"
 [ "$MODULES" = bundle ] && SRC_PATHS="$SRC_PATHS modules"
 
 # Emit modules.lock: "<path> <url> <pinned-sha>" per submodule, from the SHA
@@ -81,11 +81,12 @@ stage_kernel() { # $1 = destination kernel root
   if [ -f "$k/bin/psp" ]; then mv "$k/bin/psp" "$k/bin/hkm"; chmod +x "$k/bin/hkm"; fi
 
   # Runtime install ships NO documentation or build tooling: strip every `docs`/
-  # `doc` and `tools` directory + leftover test caches from the staged tree.
+  # `doc` and `tools` directory + leftover test caches. The templates/ subtree is
+  # EXEMPT — a scaffolded project legitimately ships its own docs/tests/tooling.
   find "$k" -depth -type d \( -name docs -o -name doc -o -name tools -o -name tests \
-       -o -name .git -o -name .github \) -exec rm -rf {} + 2>/dev/null || true
+       -o -name .git -o -name .github \) -not -path "$k/templates/*" -exec rm -rf {} + 2>/dev/null || true
   find "$k" -type f \( -name '.phpunit.result.cache' -o -name '.gitignore' \
-       -o -name '.gitattributes' \) -delete 2>/dev/null || true
+       -o -name '.gitattributes' \) -not -path "$k/templates/*" -delete 2>/dev/null || true
 
   # Drop the composer-install helper used on non-.deb targets (macOS/Windows).
   cp "$TOOLS/templates/install-kernel.sh" "$k/install.sh" 2>/dev/null || true
