@@ -89,4 +89,6 @@ pub fn set(allocator: std.mem.Allocator, io: Io, env: *EnvMap, key: []const u8, 
         try out.append(allocator, '\n');
     }
     try Dir.cwd().writeFile(io, .{ .sub_path = cfg, .data = out.items });
+    // Owner-only: this file may later hold overrides an operator considers private.
+    @import("util.zig").chmod600(io, cfg);
 }
