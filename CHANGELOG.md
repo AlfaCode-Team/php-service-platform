@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `HKM_USERDATA_DIR` — relocate the persistent registry (`projects.json` +
+  `platform.json`) outside the kernel install so a kernel update never
+  overwrites it. Honoured by the `hkm` CLI (registry) and the PHP
+  `DomainResolver`; falls back to `<kernel>/projects` when unset.
+- The `.deb` marks `projects.json` + `platform.json` as dpkg conffiles, so an
+  in-place upgrade preserves a user's registrations even without relocating.
+
 ## [1.0.3] - 2026-07-08
 
 ### Changed

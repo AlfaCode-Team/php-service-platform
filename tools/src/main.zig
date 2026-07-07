@@ -36,6 +36,7 @@ fn printHelp() void {
     prompt.item("HKM_PHP_BIN", "override php binary (default: php)");
     prompt.item("HKM_CLI_PATH", "override target php CLI script");
     prompt.item("HKM_GLOBAL_AUTOLOAD", "override global autoload path");
+    prompt.item("HKM_USERDATA_DIR", "persistent registry dir (projects.json + platform.json); survives updates");
     prompt.item("PSP_PROJECTS_DIR", "dir holding the kernel projects.json registry");
     prompt.item("HKM_KERNEL_HOME", "kernel root (registry at <root>/projects/projects.json)");
 
