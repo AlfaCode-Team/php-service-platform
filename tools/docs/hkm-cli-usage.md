@@ -26,6 +26,7 @@ hkm worker [args]            run a project's queue worker
 hkm list                     list registered projects        (alias: ls)
 hkm update <path|name>       refresh a project's registry entry
 hkm plugins [subcommand]     analyse / manage plugins         (alias: modules)
+hkm ui [subcommand]          federate enabled plugins' UIs into the frontend
 hkm doctor                   diagnose the local environment
 hkm help                     show top-level help
 ```
@@ -185,6 +186,53 @@ hkm plugins delete loyalty           # delete a plugin folder (confirms first)
 hkm plugins make:migration loyalty points
 hkm plugins enable billing --dry-run # preview only
 ```
+
+---
+
+## hkm ui — federate plugin UIs into the frontend
+
+Some plugins ship a client-side UI alongside their PHP (e.g. **Pageflow**, whose
+React/TS SPA bridge lives in `plugins/Pageflow/ui/`). A plugin *owns* its UI
+there — developed and tested in place (its own `vitest.config.ts`,
+`package.json`, …). A project *activates* that UI only while the plugin is
+enabled in its `app/bootstrap/app.php`.
+
+```
+hkm ui init [path|name]          scaffold frontend/ from the template + federate UIs
+hkm ui [sync] [path|name]        mirror every enabled plugin's ui/ + regenerate glue
+hkm ui list [path|name]          list enabled plugins that ship a UI
+hkm ui link <plugin> [path]      symlink a plugin ui/ for live co-development
+hkm ui unlink <plugin> [path]    drop the symlink, restore a copied mirror
+hkm ui clean [path|name]         remove all generated mirrors + glue
+```
+
+Flags: `--force`/`-f` overwrites even a linked mirror on `sync`.
+
+**What `sync` writes** (all generated — do not hand-edit):
+
+| Path | Role |
+|---|---|
+| `frontend/plugins/<slug>/` | read-only mirror of the plugin's `ui/` (dev-only subtrees — `node_modules`, `tests`, `dist` — and `.pdf`/`.map` files are skipped) |
+| `frontend/plugins/index.ts` | registry barrel: `plugins`, `PluginName`, `pluginNames` |
+| `frontend/plugins/manifest.json` | machine-readable inventory (name, alias, entry, framework, version, linked) |
+| `frontend/tsconfig.plugins.json` | path aliases (`@pageflow/*` → `plugins/pageflow/*`) — extend your app `tsconfig`/vite `resolve.alias` from it |
+
+**Per-plugin convention.** An optional `plugins/<Name>/ui/ui.json` overrides the
+defaults:
+
+```json
+{ "alias": "@pageflow", "entry": "index.ts", "framework": "react" }
+```
+
+Without it the alias defaults to `@<lowercased-name>` and the entry to
+`index.ts`. Federation is deterministic and project-over-plugin: only enabled
+plugins are mirrored, and the command never touches the project's own frontend
+source — just the generated `frontend/plugins/` tree and `tsconfig.plugins.json`.
+
+**Live co-development.** `hkm ui link <plugin>` swaps the copied mirror for a
+symlink to the plugin's real `ui/`, so edits flow both ways while you work; `hkm
+ui unlink` restores the copy. `sync` leaves a linked mirror alone unless
+`--force` is given.
 
 ---
 

@@ -197,6 +197,23 @@ final class Provider implements ModuleContract
             ));
         $container->bindInternal(UserInfoController::class, static fn(ModuleContainer $c) =>
             new UserInfoController($c->make(UserInfoProvider::class)));
+
+        // Scope catalogue (descriptions) + the /oauth/scopes endpoint.
+        $container->bindInternal(\Plugins\OAuth2\Application\Services\ScopeRegistry::class, static fn(ModuleContainer $c) =>
+            new \Plugins\OAuth2\Application\Services\ScopeRegistry($c->make(ScopeStore::class)));
+        $container->bindInternal(\Plugins\OAuth2\Infrastructure\Http\Controllers\ScopeController::class, static fn(ModuleContainer $c) =>
+            new \Plugins\OAuth2\Infrastructure\Http\Controllers\ScopeController(
+                $c->make(\Plugins\OAuth2\Application\Services\ScopeRegistry::class)));
+
+        // Self-service management API (clients + authorized tokens), owner-scoped.
+        $container->bindInternal(\Plugins\OAuth2\Infrastructure\Http\Controllers\ClientController::class, static fn(ModuleContainer $c) =>
+            new \Plugins\OAuth2\Infrastructure\Http\Controllers\ClientController(
+                $c->make(ClientStore::class),
+                $c->make(\AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HashingPort::class),
+            ));
+        $container->bindInternal(\Plugins\OAuth2\Infrastructure\Http\Controllers\AuthorizedTokenController::class, static fn(ModuleContainer $c) =>
+            new \Plugins\OAuth2\Infrastructure\Http\Controllers\AuthorizedTokenController(
+                $c->make(RefreshTokenStore::class)));
     }
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void

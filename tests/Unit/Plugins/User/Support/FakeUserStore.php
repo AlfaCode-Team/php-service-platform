@@ -40,6 +40,31 @@ final class FakeUserStore implements UserStore
         return null;
     }
 
+    /** @var array<string,string> userId => remember-token hash */
+    public array $rememberTokens = [];
+
+    public function findByRememberToken(string $tokenHash): ?User
+    {
+        if ($tokenHash === '') {
+            return null;
+        }
+        foreach ($this->rememberTokens as $userId => $hash) {
+            if (hash_equals($hash, $tokenHash)) {
+                return $this->byId[$userId] ?? null;
+            }
+        }
+        return null;
+    }
+
+    public function updateRememberToken(string $userId, ?string $tokenHash): void
+    {
+        if ($tokenHash === null) {
+            unset($this->rememberTokens[$userId]);
+            return;
+        }
+        $this->rememberTokens[$userId] = $tokenHash;
+    }
+
     public function existsByUsernameOrEmail(string $username, string $email, ?string $exceptUserId = null): bool
     {
         foreach ($this->byId as $u) {

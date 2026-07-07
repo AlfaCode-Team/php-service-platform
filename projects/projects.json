@@ -2,7 +2,7 @@
     "shop": {
         "name": "shop",
         "version": "1.0.0",
-        "path": "/home/home/Documents/#PROJECTS/psp-shop",
+        "path": "/home/home/Documents/PROJECTS/psp-shop",
         "domains": [
             "shop.com"
         ]
@@ -10,7 +10,7 @@
     "hkmcode": {
         "name": "hkmcode",
         "version": "1.0.0",
-        "path": "/home/home/Documents/#PROJECTS/hkmcode",
+        "path": "/home/home/Documents/PROJECTS/hkmcode",
         "domains": [
             "hkm.local",
             "api.hkm.local",

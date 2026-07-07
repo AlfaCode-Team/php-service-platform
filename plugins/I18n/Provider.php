@@ -10,6 +10,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Events\EventBus;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Cli\CliPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\HttpPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Worker\WorkerPipeline;
+use Plugins\I18n\Infrastructure\Http\LocaleStage;
 
 /**
  * I18n plugin — file-based translator for localized messages (validation, etc.).
@@ -51,5 +52,8 @@ final class Provider implements ModuleContract
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
     {
+        // Negotiate the per-request locale and expose the Translator to the
+        // global helpers. after.load runs once the route's container exists.
+        $http->hook('after.load', LocaleStage::class, priority: 45);
     }
 }

@@ -23,10 +23,27 @@ interface ClientStore
         array $grantTypes,
         array $scopes,
         bool $confidential,
+        ?string $ownerId = null,
     ): void;
 
     /** @return list<Client> */
     public function all(): array;
+
+    /**
+     * Clients registered by a given user (self-service management).
+     *
+     * @return list<Client>
+     */
+    public function findByOwner(string $ownerId): array;
+
+    /**
+     * Update a client's editable details (name/redirects/scopes). False when no
+     * such client.
+     *
+     * @param list<string> $redirectUris
+     * @param list<string> $scopes
+     */
+    public function updateDetails(string $id, string $name, array $redirectUris, array $scopes): bool;
 
     /** Mark a client revoked (its tokens stop being issued/accepted). */
     public function revoke(string $id): bool;

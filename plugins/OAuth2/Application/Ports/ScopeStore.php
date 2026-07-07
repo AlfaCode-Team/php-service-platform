@@ -11,4 +11,12 @@ interface ScopeStore
 
     /** @return list<string> all registered scope identifiers */
     public function all(): array;
+
+    /**
+     * The scope catalogue with human-readable descriptions (consent screens +
+     * the /oauth/scopes endpoint).
+     *
+     * @return array<string,string> id => description ('' when none stored)
+     */
+    public function describe(): array;
 }

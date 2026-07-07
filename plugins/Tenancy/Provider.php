@@ -16,7 +16,6 @@ use Plugins\Auth\API\Contracts\AuthServiceContract;
 use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
 use Plugins\Tenancy\API\Contracts\InvitationServiceContract;
 use Plugins\Tenancy\API\Contracts\MembershipServiceContract;
-use Plugins\Tenancy\API\Contracts\RefreshTokenServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantAdminServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantConnectionResolverContract;
 use Plugins\Tenancy\API\Contracts\TenantHostRegistryContract;
@@ -29,20 +28,17 @@ use Plugins\Tenancy\Application\Ports\InvitationStore;
 use Plugins\Tenancy\Application\Ports\MembershipReader;
 use Plugins\Tenancy\Application\Ports\MembershipWriter;
 use Plugins\Tenancy\Application\Ports\DnsResolver;
-use Plugins\Tenancy\Application\Ports\RefreshTokenStore;
 use Plugins\Tenancy\Application\Ports\TenantProvisioner;
 use Plugins\Tenancy\Application\Ports\TenantWriteStore;
 use Plugins\Tenancy\Application\Ports\TenantHostStore;
 use Plugins\Tenancy\Application\Services\AuditService;
 use Plugins\Tenancy\Application\Services\InvitationService;
 use Plugins\Tenancy\Application\Services\MembershipService;
-use Plugins\Tenancy\Application\Services\RefreshTokenService;
 use Plugins\Tenancy\Application\Services\TenantAdminService;
 use Plugins\Tenancy\Application\Services\TenantHostService;
 use Plugins\Tenancy\Infrastructure\Persistence\AuditTrail;
 use Plugins\Tenancy\Infrastructure\Persistence\AuditLogRepository;
 use Plugins\Tenancy\Infrastructure\Dns\SystemDnsResolver;
-use Plugins\Tenancy\Infrastructure\Http\Controllers\AuthTokenController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\InvitationController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantAdminController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantController;
@@ -55,7 +51,6 @@ use Plugins\Tenancy\Infrastructure\Http\Identification\TenantIdentifier;
 use Plugins\Tenancy\Infrastructure\Http\Stages\TenantContextStage;
 use Plugins\Tenancy\Infrastructure\Persistence\InvitationRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\MembershipRepository;
-use Plugins\Tenancy\Infrastructure\Persistence\RefreshTokenRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantAdminRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantHostRegistry;
 use Plugins\Tenancy\Infrastructure\Provisioning\DdlTenantProvisioner;
@@ -101,7 +96,6 @@ final class Provider implements ModuleContract
             TenantConnectionResolverContract::class,
             MembershipServiceContract::class,
             InvitationServiceContract::class,
-            RefreshTokenServiceContract::class,
             TenantAdminServiceContract::class,
         ];
     }
@@ -261,29 +255,12 @@ final class Provider implements ModuleContract
                 audit:       $c->make(AuditSink::class),
             ));
 
-        // ── refresh tokens (revocable long-lived sessions) ───────────────────
-        $container->bindInternal(RefreshTokenStore::class, static fn ($c): RefreshTokenStore =>
-            new RefreshTokenRepository($c->make(DatabaseConnectionManagerContract::class)->default()));
-
-        $container->bind(RefreshTokenServiceContract::class, static fn ($c): RefreshTokenServiceContract =>
-            new RefreshTokenService(
-                tokens:      $c->make(RefreshTokenStore::class),
-                auth:        $c->make(AuthServiceContract::class),
-                memberships: $c->make(MembershipReader::class),
-                audit:       $c->make(AuditSink::class),
-                refreshTtl:  self::intEnv('TENANCY_REFRESH_TTL', 2592000),
-                accessTtl:   self::intEnv('TENANCY_ACCESS_TTL', 900),
-            ));
-
-        // ── HTTP boundaries for the invitation + refresh flows ───────────────
+        // ── HTTP boundary for the invitation flow ────────────────────────────
         $container->bindInternal(InvitationController::class, static fn ($c): InvitationController =>
             new InvitationController(
                 $c->make(InvitationServiceContract::class),
                 $c->make(UserServiceContract::class),
             ));
-
-        $container->bindInternal(AuthTokenController::class, static fn ($c): AuthTokenController =>
-            new AuthTokenController($c->make(RefreshTokenServiceContract::class)));
     }
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void

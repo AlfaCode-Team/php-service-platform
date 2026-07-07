@@ -20,6 +20,14 @@
         { "method": "POST", "path": "/oauth/introspect", "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\IntrospectionController@introspect" },
         { "method": "POST", "path": "/oauth/revoke",     "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\IntrospectionController@revoke" },
         { "method": "GET",  "path": "/oauth/jwks",       "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\JwksController@keys" },
+
+        { "method": "GET",    "path": "/oauth/scopes",  "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\ScopeController@index" },
+        { "method": "GET",    "path": "/oauth/clients",      "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\ClientController@forUser", "filters": ["auth"] },
+        { "method": "POST",   "path": "/oauth/clients",      "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\ClientController@store",   "filters": ["auth", "throttle:20,1"] },
+        { "method": "PUT",    "path": "/oauth/clients/{id}", "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\ClientController@update",  "filters": ["auth"] },
+        { "method": "DELETE", "path": "/oauth/clients/{id}", "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\ClientController@destroy", "filters": ["auth"] },
+        { "method": "GET",    "path": "/oauth/authorized-tokens",      "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\AuthorizedTokenController@forUser", "filters": ["auth"] },
+        { "method": "DELETE", "path": "/oauth/authorized-tokens/{id}", "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\AuthorizedTokenController@destroy", "filters": ["auth"] },
         { "method": "GET",  "path": "/.well-known/oauth-authorization-server", "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\DiscoveryController@metadata" },
         { "method": "GET",  "path": "/.well-known/openid-configuration",       "handler": "Plugins\\OAuth2\\Infrastructure\\Http\\Controllers\\DiscoveryController@openidConfiguration" }
     ],

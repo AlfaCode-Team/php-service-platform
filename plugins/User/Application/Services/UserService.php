@@ -254,6 +254,72 @@ final class UserService implements UserServiceContract
         return UserDTO::fromEntity($user);
     }
 
+    public function findByIdentifier(string $identifier): ?UserDTO
+    {
+        if ($identifier === '') {
+            return null;
+        }
+
+        $user = $this->repository->findByIdentifier($identifier);
+
+        return $user === null ? null : UserDTO::fromEntity($user);
+    }
+
+    public function resetPassword(string $userId, string $newPassword): bool
+    {
+        $user = $this->repository->find($userId);
+        if ($user === null) {
+            return false;
+        }
+
+        $this->assertNotBreached($newPassword);
+
+        $this->transaction->begin();
+        try {
+            $user->changePassword($this->hasher->make($newPassword));
+            $user->commitChanges();
+            $this->repository->update($user);
+            // Invalidate outstanding "remember me" cookies after a reset.
+            $this->repository->updateRememberToken($userId, null);
+            $this->transaction->commit();
+        } catch (\Throwable $e) {
+            $this->transaction->rollback();
+            throw $this->wrap($e, 'user.password.reset_failed', ['id' => $userId]);
+        }
+
+        $this->audit->record('user.password.reset', ['userId' => $userId]);
+
+        return true;
+    }
+
+    public function findByRememberToken(string $token): ?UserDTO
+    {
+        if ($token === '') {
+            return null;
+        }
+
+        $user = $this->repository->findByRememberToken(hash('sha256', $token));
+
+        if ($user === null || !$user->canLogin()) {
+            return null;
+        }
+
+        return UserDTO::fromEntity($user);
+    }
+
+    public function cycleRememberToken(string $userId): string
+    {
+        $plaintext = bin2hex(random_bytes(32));
+        $this->repository->updateRememberToken($userId, hash('sha256', $plaintext));
+
+        return $plaintext;
+    }
+
+    public function clearRememberToken(string $userId): void
+    {
+        $this->repository->updateRememberToken($userId, null);
+    }
+
     public function delete(string $id): bool
     {
         $this->requireSelfOrPermission($id, 'user:delete-any');

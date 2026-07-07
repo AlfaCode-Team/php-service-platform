@@ -25,6 +25,12 @@ interface UserStore
 
     public function findByIdentifier(string $identifier): ?User;
 
+    /** Look up an active user by the SHA-256 hash of a "remember me" token. */
+    public function findByRememberToken(string $tokenHash): ?User;
+
+    /** Persist (or clear, with null) the remember-token hash for a user. */
+    public function updateRememberToken(string $userId, ?string $tokenHash): void;
+
     public function existsByUsernameOrEmail(string $username, string $email, ?string $exceptUserId = null): bool;
 
     public function insert(User $user): void;
