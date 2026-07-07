@@ -94,7 +94,7 @@ stage_kernel() { # $1 = destination kernel root
 
 build_zig() { # $1 = zig target triple, $2 = out dir
   say "zig build $1"
-  ( cd "$TOOLS" && zig build --release=small -Dtarget="$1" -p "$2" )
+  ( cd "$TOOLS" && zig build --release=small -Dversion="$VERSION" -Dtarget="$1" -p "$2" )
 }
 
 rm -rf "$DIST"; mkdir -p "$DIST"
