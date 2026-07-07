@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Plugins\Auth\Application\Services;
 
 use AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\ServiceException;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Request;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\CachePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HashingPort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort;
 use Plugins\Auth\API\Contracts\AuthServiceContract;
+use Plugins\Auth\API\DTOs\TokenDTO;
+use Plugins\Auth\API\Guard;
 use Plugins\Auth\Infrastructure\Persistence\PersonalAccessTokenRepository;
 use Plugins\Auth\Security\JwtAuthLayer;
 use Firebase\JWT\JWT;
@@ -91,6 +94,19 @@ final class AuthService implements AuthServiceContract
         $kid = ($this->jwtKid !== null && $this->jwtKid !== '') ? $this->jwtKid : null;
 
         return JWT::encode($payload, $signingKey, $this->jwtAlgo, $kid);
+    }
+
+    public function guard(Request $request): Guard
+    {
+        return Guard::fromRequest($request);
+    }
+
+    public function tokensFor(string $userId): array
+    {
+        return array_map(
+            static fn (array $row): TokenDTO => TokenDTO::fromRow($row),
+            $this->tokens->findByUser($userId),
+        );
     }
 
     public function createPersonalAccessToken(

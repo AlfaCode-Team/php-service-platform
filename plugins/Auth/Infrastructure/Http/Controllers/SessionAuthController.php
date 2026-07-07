@@ -7,6 +7,9 @@ namespace Plugins\Auth\Infrastructure\Http\Controllers;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Response;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort;
 use Plugins\Auth\API\Contracts\AuthServiceContract;
+use Plugins\Auth\Domain\ValueObjects\Recaller;
+use Plugins\Auth\Infrastructure\Http\Stages\SessionAuthStage;
+use Plugins\Cookie\Infrastructure\CookieJar;
 use Plugins\User\API\Contracts\UserServiceContract;
 use Project\Http\Controllers\ApiController;
 
@@ -34,6 +37,7 @@ final class SessionAuthController extends ApiController
         private readonly AuthServiceContract $auth,
         private readonly UserServiceContract $users,
         private readonly SessionPort $session,
+        private readonly ?CookieJar $cookies = null,
     ) {
     }
 
@@ -58,11 +62,30 @@ final class SessionAuthController extends ApiController
 
         $this->auth->startSession($this->session, $user->id);
 
+        // "Remember me" — issue an encrypted recaller cookie so the session can
+        // be re-established after it expires (validated by SessionAuthStage).
+        if ($this->cookies !== null && $request->boolean('remember')) {
+            $token = $this->users->cycleRememberToken($user->id);
+            $this->cookies->queue(
+                SessionAuthStage::RECALLER_COOKIE,
+                Recaller::make($user->id, $token)->value(),
+                maxAge: SessionAuthStage::RECALLER_TTL,
+            );
+        }
+
         return $this->ok(['user' => $user->toArray()]);
     }
 
     public function logout(): Response
     {
+        // Kill any outstanding recaller: clear the stored token so existing
+        // cookies stop authenticating, then expire the cookie itself.
+        $userId = $this->identity()->userId;
+        if ($userId !== '') {
+            $this->users->clearRememberToken($userId);
+        }
+        $this->cookies?->forget(SessionAuthStage::RECALLER_COOKIE);
+
         $this->auth->endSession($this->session);
 
         return $this->noContent();

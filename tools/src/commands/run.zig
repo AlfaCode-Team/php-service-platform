@@ -203,6 +203,13 @@ const Control = union(enum) { restart, quit: u8 };
 /// back to a plain blocking run when stdin is not an interactive terminal
 /// (pipes / CI), where there is no keyboard to listen to.
 fn runWatched(io: Io, env: *EnvMap, argv: []const []const u8) !u8 {
+    // The interactive supervisor uses POSIX raw-mode termios + poll(), which do
+    // not exist on Windows. There, fall back to a plain blocking run (same
+    // behaviour as a non-TTY stdin on POSIX).
+    if (@import("builtin").os.tag == .windows) {
+        return spawnWait(io, env, argv);
+    }
+
     const tty = std.posix.STDIN_FILENO;
 
     // tcgetattr fails with ENOTTY when stdin is not a terminal — that's our

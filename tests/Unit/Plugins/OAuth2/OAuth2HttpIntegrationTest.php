@@ -229,7 +229,7 @@ final class OAuth2HttpIntegrationTest extends TestCase
     private function createSchema(): void
     {
         $this->db->execute('CREATE TABLE oauth_scopes (id TEXT PRIMARY KEY, description TEXT, created_at TEXT)');
-        $this->db->execute('CREATE TABLE oauth_clients (id TEXT PRIMARY KEY, name TEXT, secret_hash TEXT, redirect_uris TEXT, grant_types TEXT, scopes TEXT, confidential INTEGER, revoked INTEGER, created_at TEXT)');
+        $this->db->execute('CREATE TABLE oauth_clients (id TEXT PRIMARY KEY, name TEXT, secret_hash TEXT, redirect_uris TEXT, grant_types TEXT, scopes TEXT, confidential INTEGER, revoked INTEGER, owner_id TEXT, created_at TEXT)');
         $this->db->execute('CREATE TABLE oauth_auth_codes (id TEXT PRIMARY KEY, code_hash TEXT UNIQUE, client_id TEXT, user_id TEXT, redirect_uri TEXT, scopes TEXT, code_challenge TEXT, code_challenge_method TEXT, nonce TEXT, consumed INTEGER, expires_at TEXT, created_at TEXT)');
         $this->db->execute('CREATE TABLE oauth_refresh_tokens (id TEXT PRIMARY KEY, family_id TEXT, token_hash TEXT UNIQUE, client_id TEXT, user_id TEXT, scopes TEXT, revoked INTEGER, expires_at TEXT, created_at TEXT)');
         $this->db->execute('CREATE TABLE oauth_device_codes (id TEXT PRIMARY KEY, device_code_hash TEXT UNIQUE, user_code TEXT UNIQUE, client_id TEXT, scopes TEXT, status TEXT, user_id TEXT, interval_seconds INTEGER, last_polled_at TEXT, expires_at TEXT, created_at TEXT)');

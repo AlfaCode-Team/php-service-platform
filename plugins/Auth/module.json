@@ -5,12 +5,24 @@
     "type": "module",
 
     "requires": ["database.management", "crypto.services", "user.management"],
-    "exposes": ["Plugins\\Auth\\API\\Contracts\\AuthServiceContract"],
+    "exposes": [
+        "Plugins\\Auth\\API\\Contracts\\AuthServiceContract",
+        "Plugins\\Auth\\API\\Contracts\\RefreshTokenServiceContract"
+    ],
 
     "routes": [
         { "method": "POST", "path": "/auth/login",  "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\SessionAuthController@login",  "filters": ["throttle:10,1"] },
         { "method": "POST", "path": "/auth/logout", "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\SessionAuthController@logout" },
-        { "method": "GET",  "path": "/auth/me",     "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\SessionAuthController@me" }
+        { "method": "GET",  "path": "/auth/me",     "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\SessionAuthController@me" },
+
+        { "method": "GET",    "path": "/auth/tokens",      "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\PersonalAccessTokenController@index",   "filters": ["auth"] },
+        { "method": "POST",   "path": "/auth/tokens",      "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\PersonalAccessTokenController@store",   "filters": ["auth", "throttle:20,1"] },
+        { "method": "DELETE", "path": "/auth/tokens/{id}", "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\PersonalAccessTokenController@destroy", "filters": ["auth"] },
+
+        { "method": "POST", "path": "/auth/token/refresh", "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\TransientTokenController@refresh", "filters": ["auth"] },
+
+        { "method": "POST", "path": "/auth/refresh",        "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\AuthTokenController@refresh", "filters": ["throttle:30,1"] },
+        { "method": "POST", "path": "/auth/refresh/logout", "handler": "Plugins\\Auth\\Infrastructure\\Http\\Controllers\\AuthTokenController@logout" }
     ],
     "emits": [],
     "listens": [],
@@ -23,6 +35,8 @@
         { "key": "JWT_PRIVATE_KEY",      "type": "string", "required": false },
         { "key": "JWT_PRIVATE_KEY_FILE", "type": "string", "required": false },
         { "key": "JWT_KID",        "type": "string", "required": false },
-        { "key": "AUTH_PAT_TABLE", "type": "string", "required": false }
+        { "key": "AUTH_PAT_TABLE", "type": "string", "required": false },
+        { "key": "AUTH_REFRESH_TTL", "type": "int", "required": false },
+        { "key": "AUTH_REFRESH_ACCESS_TTL", "type": "int", "required": false }
     ]
 }

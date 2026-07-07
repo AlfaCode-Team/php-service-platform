@@ -289,10 +289,12 @@ final class CreateTenantCommand extends AbstractCommand
         if ($driver === 'sqlsrv') {
             $pass  = "'" . str_replace("'", "''", $dbPass) . "'";
             $login = str_replace(']', ']]', $dbUser);   // escape ] in the bracketed identifier
-            // Server-level LOGIN (idempotent)…
+            // Server-level LOGIN (idempotent) — create if absent, else force the
+            // password so a pre-existing login can't keep a stale credential.
             $db->execute(
                 "IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '{$dbUser}') "
-                . "CREATE LOGIN [{$login}] WITH PASSWORD = {$pass}"
+                . "CREATE LOGIN [{$login}] WITH PASSWORD = {$pass}; "
+                . "ELSE ALTER LOGIN [{$login}] WITH PASSWORD = {$pass};"
             );
             // …then a database USER mapped to it, made db_owner of ONLY this database.
             $db->execute(
@@ -311,7 +313,12 @@ final class CreateTenantCommand extends AbstractCommand
         // and TCP ('127.0.0.1'); a remote host is bound to that exact host only.
         $pass = "'" . str_replace(['\\', "'"], ['\\\\', "\\'"], $dbPass) . "'";
         foreach ($this->grantHosts($dbHost) as $host) {
+            // CREATE USER IF NOT EXISTS is a no-op — password included — when the
+            // account already exists, so ALTER USER forces the credential we just
+            // collected (otherwise a lingering account keeps its stale password
+            // and the tenant connection below fails "using password: YES").
             $db->execute("CREATE USER IF NOT EXISTS '{$dbUser}'@'{$host}' IDENTIFIED BY {$pass}");
+            $db->execute("ALTER USER '{$dbUser}'@'{$host}' IDENTIFIED BY {$pass}");
             $db->execute("GRANT ALL PRIVILEGES ON `{$dbName}`.* TO '{$dbUser}'@'{$host}'");
         }
         $db->execute('FLUSH PRIVILEGES');

@@ -115,7 +115,8 @@ final class DdlTenantProvisioner implements TenantProvisioner
             $login = str_replace(']', ']]', $dbUser);
             $db->execute(
                 "IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '{$dbUser}') "
-                . "CREATE LOGIN [{$login}] WITH PASSWORD = {$pass}"
+                . "CREATE LOGIN [{$login}] WITH PASSWORD = {$pass}; "
+                . "ELSE ALTER LOGIN [{$login}] WITH PASSWORD = {$pass};"
             );
             $db->execute(
                 "USE [{$dbName}]; "
@@ -130,7 +131,12 @@ final class DdlTenantProvisioner implements TenantProvisioner
         // MySQL / MariaDB — pin the account to the connecting host (never '%').
         $pass = "'" . str_replace(['\\', "'"], ['\\\\', "\\'"], $dbPass) . "'";
         foreach ($this->grantHosts($dbHost) as $host) {
+            // CREATE USER IF NOT EXISTS is a no-op — password included — when the
+            // account already exists, so ALTER USER forces the current credential
+            // (a lingering account otherwise keeps a stale password → the tenant
+            // connection fails "using password: YES").
             $db->execute("CREATE USER IF NOT EXISTS '{$dbUser}'@'{$host}' IDENTIFIED BY {$pass}");
+            $db->execute("ALTER USER '{$dbUser}'@'{$host}' IDENTIFIED BY {$pass}");
             $db->execute("GRANT ALL PRIVILEGES ON `{$dbName}`.* TO '{$dbUser}'@'{$host}'");
         }
         $db->execute('FLUSH PRIVILEGES');

@@ -56,6 +56,14 @@ public clients are identified by `client_id` + PKCE only.
 | `POST /oauth/revoke` | RFC 7009 — refresh family revoke **+ JWT `jti` deny-list** |
 | `GET /oauth/jwks` | RFC 7517 JWKS (RSA + EC) |
 | `GET /.well-known/oauth-authorization-server` · `/openid-configuration` | RFC 8414 / OIDC discovery |
+| `GET /oauth/scopes` | scope catalogue **with descriptions** (`ScopeRegistry` over `ScopeStore::describe()`) — public |
+| `GET/POST/PUT/DELETE /oauth/clients` · `/clients/{id}` | **self-service client mgmt** (`auth`-gated, owner-scoped via `owner_id`; secret shown ONCE on create; another owner's client → 404) |
+| `GET/DELETE /oauth/authorized-tokens` · `/{id}` | **self-service authorized-apps** — list a user's active grants; delete revokes the whole rotation family (`RefreshTokenStore::findByUser`) |
+
+The mgmt trio is the GDA-native port of Passport's `Client`/`AuthorizedAccessToken`/
+`Scope` controllers. `ScopeRegistry` also exposes `scopesFor()`/`tokensCan()`/
+`hasScope()` for consent screens. Personal (user) API keys are NOT here — those
+are Auth PATs (`/auth/tokens`); `oauth_clients` stores APPLICATIONS, not user keys.
 
 CSRF: the machine POSTs (`/oauth/token`, `/introspect`, `/revoke`,
 `/device_authorization`) MUST be in `CsrfTokenLayer` `exemptPaths` (client-auth,

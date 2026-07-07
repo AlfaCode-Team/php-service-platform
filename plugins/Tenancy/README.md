@@ -7,13 +7,13 @@ correct tenant DB. Built on top of `plugins/Database`'s `ConnectionManager`.
 
 - **solves:** `tenancy.routing`
 - **requires:** `database.management`, `auth.identity`
-- **exposes:** `TenantRegistryContract`, `TenantConnectionResolverContract`, `MembershipServiceContract`, `InvitationServiceContract`, `RefreshTokenServiceContract`
+- **exposes:** `TenantRegistryContract`, `TenantConnectionResolverContract`, `MembershipServiceContract`, `InvitationServiceContract`
 
 ## Two planes
 
 | Plane | DB | Tables |
 |---|---|---|
-| Control (central) | one, always connected | `users`, `tenants`, `user_tenants` (+ invitations/refresh/audit) |
+| Control (central) | one, always connected | `users`, `tenants`, `user_tenants` (+ invitations/audit) |
 | Data (per tenant)  | one per tenant, on demand | pure business domain — `projects`, `tasks`, … **no auth, no `tenant_id` column** |
 
 ## Wiring
@@ -52,7 +52,6 @@ Central migrations (run on the central connection via `hkm migrate:run`):
 | `tenants` | registry → connection coordinates (password encrypted) |
 | `user_tenants` | M:N membership: user ↔ tenant + role + status |
 | `tenant_invitations` | email onboarding; SHA-256 token only; converts to a membership on accept |
-| `refresh_tokens` | revocable long-lived counterpart to short access JWTs; hash only |
 | `audit_log` | append-only trail (login, `tenant.switch`, `tenant.create`, …) |
 
 ## Tenant-selection flow (`MembershipServiceContract`)
@@ -109,39 +108,16 @@ POST /ajx/invitations/accept   { "token": "…" }   → { "tenantId": "…" }
 This is why Tenancy `requires: ["user.management"]` — `InvitationController`
 resolves the caller's verified email via `UserServiceContract`.
 
-## Refresh tokens (`RefreshTokenServiceContract`)
+## Refresh tokens — moved to `Plugins\Auth`
 
-Revocable long-lived sessions paired with the short access JWT.
+Refresh tokens are an **authentication** concern, so they now live in
+`Plugins\Auth` (`RefreshTokenServiceContract`, table `refresh_tokens`, endpoints
+`POST /auth/refresh` + `/auth/refresh/logout`). See `docs/ai-context/25_AUTH.md`.
 
-```php
-$issued = $refreshTokens->issue($userId, $tenantId, $device, $ip);   // raw token shown once
-$rot    = $refreshTokens->rotate($rawToken, $ip);
-// → RefreshRotation{ accessToken, expiresIn, refreshToken, refreshExpiresAt, tenantId, role }
-
-$refreshTokens->revoke($rawToken);          // logout this session
-$refreshTokens->revokeAllForUser($userId);  // logout everywhere
-```
-
-Rotation is **one-time-use with reuse detection**. Each login roots a token
-**family** (`family_id`); every rotated token inherits it. `rotate()` revokes the
-presented token via an **atomic** conditional UPDATE — only the caller that wins
-the revoke proceeds. Replaying an already-revoked token (a captured/stolen token)
-or losing a concurrent rotation race is treated as **reuse**: the entire family
-is revoked and `auth.refresh_reuse_detected` is audited, so a leaked token
-cannot be used to fork a live session. Rotation also mints a fresh access JWT in
-the same call, and — for a tenant-scoped token — **re-checks `user_tenants`** so a
-revoked seat can't refresh back in. Tunable via `TENANCY_REFRESH_TTL` (default
-30d) and `TENANCY_ACCESS_TTL` (default 15m).
-
-Wired endpoints (UNAUTHENTICATED — the refresh token in the body is the credential):
-
-```
-POST /ajx/auth/refresh   { "token": "…" }   → { accessToken, expiresIn, refreshToken, refreshExpiresAt, tenantId, role }
-POST /ajx/auth/logout    { "token": "…" }   → 204  (revoke this session)
-```
-
-`issue()` (at login / after `selectTenant`) is called from your Auth flow — there
-is no public "mint a refresh token" endpoint, by design.
+The relocated flow is **tenant-agnostic**: `tenantId` rides through as a
+passthrough hint for the access token's `tnt` claim but is NOT re-verified on
+refresh. The tenant seat re-check (a revoked seat can't get back in) lives HERE,
+in the tenant-**selection** flow (`POST /ajx/tenants/{id}/select`), not on refresh.
 
 ## Provisioning & migrations
 

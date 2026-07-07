@@ -23,15 +23,22 @@ Every suggestion must follow the AlfacodeTeam PhpServicePlatform rules in this f
 
 This repository supports OS-native distribution through GitHub Releases.
 
-- Release workflow: `.github/workflows/release.yml`
+- Release workflow: `.github/workflows/release.yml` (each OS job calls `tools/bundle.sh <os>`)
+- Local bundling: `tools/bundle.sh [linux|macos|windows|all]` → writes to `dist/`
 - Trigger: push a tag matching `v*` (example: `v1.0.0`)
 - Artifacts:
-    - Linux: `psp-kernel_<version>_amd64.deb`
-    - Windows: `psp-kernel-<version>-windows-x86_64.zip`
-    - macOS: `psp-kernel-<version>-macos-universal.tar.gz`
+    - Linux: `hkm-kernel_<version>_amd64.deb`  → installs `/opt/hkm-kernel` + `/usr/bin/hkm`
+    - Windows: `hkm-kernel-<version>-windows-x86_64.zip`
+    - macOS: `hkm-kernel-<version>-macos-universal.tar.gz` (`HKM.app`)
 
-Launcher/config binaries are built from `tools/psp-launcher-zig/`.
-Use pinned Zig version from `tools/psp-launcher-zig/.zig-version`.
+The native launcher (`hkm`) + `hkm-config` are built from `tools/` (`tools/build.zig`,
+source in `tools/src/`). Use the pinned Zig version from `tools/.zig-version`
+(`0.17.0-dev.657+2faf8debf`). The kernel PHP CLI (`bin/psp`) is installed inside the
+bundle as `<kernel>/bin/hkm` so the launcher's default passthrough path resolves.
+
+End users still need PHP >= 8.2 with the required extensions — run `hkm doctor` to
+verify (checks PHP version, required extensions json/mbstring/ctype/tokenizer/filter/
+pdo/openssl/curl/fileinfo, a PDO driver, and reports optional redis/swoole/gd/intl).
 
 ---
 
@@ -1586,7 +1593,18 @@ interface HttpClientPort {   // outbound HTTP for Gateways — adapter: plugins/
     public function request(string $method, string $url, array $options = []): HttpClientResponse;
     public function get(string $url, array $query = []): HttpClientResponse;
     public function post(string $url, array $data = []): HttpClientResponse;   // + put/patch/delete
+    public function pending(): PendingRequestContract;   // immutable fluent builder — reachable via the PORT
 }
+// HttpClient adapter guarantees (plugins/HttpClient):
+//   • Retries are idempotent-only by DEFAULT (GET/HEAD/PUT/DELETE/OPTIONS/TRACE) on transport
+//     failure AND transient 5xx/429 — a POST/PATCH is never silently re-sent. Widen with the
+//     builder ->retryMethods([...]) or the 'retry_methods' request option. Backoff is
+//     coroutine-aware (OpenSwoole/Swoole Coroutine::usleep) so it never blocks the worker.
+//   • CR/LF header injection is REJECTED (throws); multipart field/file names strip CR/LF + ".
+//   • JSON bodies encode with JSON_THROW_ON_ERROR (throws GatewayException, never ships '{}').
+//   • Response body capped at HTTP_CLIENT_MAX_RESPONSE_BYTES (default 32 MiB) — OOM guard.
+//   • pending() + PendingRequestContract live in the kernel Ports namespace so a Gateway typed
+//     against HttpClientPort can use baseUrl()/withToken()/asForm()/attach() without touching the adapter.
 
 interface SessionPort {      // request-scoped — adapter: plugins/Session (essential module)
     public function start(?string $id = null): void;
@@ -1890,10 +1908,11 @@ Local application-specific modules live in `plugins/`, NOT `projects/`.
 
 **Registered plugins:**
 
-| Plugin  | Namespace          | Solves            |
-|---------|--------------------|-------------------|
-| Task    | `Plugins\Task\`    | `task.management` |
-| SiteSEO | `Plugins\SiteSEO\` | `seo.management`  |
+| Plugin  | Namespace          | Solves             |
+|---------|--------------------|--------------------|
+| Task    | `Plugins\Task\`    | `task.management`  |
+| SiteSEO | `Plugins\SiteSEO\` | `seo.management`   |
+| I18n    | `Plugins\I18n\`    | `i18n.translation` |
 
 **Infrastructure plugins (port adapters / pipeline stages):**
 
@@ -1901,19 +1920,102 @@ Local application-specific modules live in `plugins/`, NOT `projects/`.
 |---------------|-------------------------|----------------------------------------------------------|------------|
 | Storage       | `storage.local`         | `StoragePort` (local disk **or** S3/S3-compatible via Flysystem; atomic+fsync writes, stream up/download, signed temp URLs). Config via `storage_config()` / `STORAGE_*` env | on-demand  |
 | View          | `view.rendering`        | `ViewRendererContract` (PHP templates: layouts, sections, decorators; project-first cascade + `ns::view`) | on-demand  |
-| HttpClient    | `http.client`           | `HttpClientPort` (cURL, fluent builder, multipart)       | on-demand  |
+| HttpClient    | `http.client`           | `HttpClientPort` (cURL, fluent `pending()` via port, idempotent-safe retries + coroutine backoff, CR/LF header + multipart hardening, JSON_THROW_ON_ERROR, response size cap) | on-demand  |
 | Session       | `session.management`    | `SessionPort` (file/array/cookie handlers, flash, CSRF token). Cookie driver = stateless encrypted-or-HMAC-signed cookie with absolute + idle timeout, configurable fingerprint binding (UA and/or IP), transparent compression, size ceiling, and enforceable auth/encryption | essential  |
 | Cookie        | `http.cookies`          | `CookieJar` + queued-cookie flush stage (encrypts via `EncryptionPort`) | essential |
 | RedisCache    | `cache.redis`           | `CachePort` + `QueuePort` (ext-redis, in-memory fallback)| essential  |
 | SecurityFilters | `http.security_filters` | global hooks: CORS, SecureHeaders. Route-filter aliases: `auth`, `throttle`, `hmac`, `shield` | hooked + filters |
-| Tenancy       | `tenancy.routing`       | Multi-tenant control plane: `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract`. Maps `Identity.tenantId` → isolated tenant `DatabasePort`, rebinds it per request (`TenantContextStage` @ `after.load`). Fail-closed routing + per-tenant circuit breaker; central `tenants`/`user_tenants`/`tenant_invitations`/`refresh_tokens`/`audit_log`. Selection flow: `GET /api/me/tenants`, `POST /api/tenants/{id}/select` (re-verifies membership, mints `tnt` token). Invitations (email onboarding → seat) + one-time-use refresh-token rotation (re-checks membership, mints access JWT). CLI: `tenants:create`, `tenants:migrate`. `requires: ["database.management","auth.identity","user.management"]` | essential  |
+| Tenancy       | `tenancy.routing`       | Multi-tenant control plane ONLY (NOT authentication): `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `TenantAdminServiceContract`. Maps `Identity.tenantId` → isolated tenant `DatabasePort`, rebinds it per request (`TenantContextStage` @ `after.load`). Fail-closed routing + per-tenant circuit breaker; central `tenants`/`user_tenants`/`tenant_invitations`/`audit_log`/`tenant_hosts`. Selection flow: `GET /ajx/me/tenants`, `POST /ajx/tenants/{id}/select` (re-verifies membership, mints `tnt` token) — the tenant seat re-check lives HERE, at selection. Invitations (email onboarding → seat). CLI: `tenants:create`, `tenants:migrate`. **Refresh tokens live in `Plugins\Auth`, not here** (authentication ≠ tenancy). `requires: ["database.management","auth.identity","user.management"]` | essential  |
 | User          | `user.management`       | GLOBAL central identity store: `UserServiceContract` (register/CRUD, email verification, timing-safe + rate-limited credential verification, rehash-on-login). Repo + transactional outbox pinned to **central**; optimistic-locked; emits `user.registered/updated/deleted`. Optional HIBP breach screening (`USER_BREACH_CHECK`). CLI `user:outbox:relay`. `requires: ["database.management","crypto.services","cache.redis","view.rendering","http.client"]`. Full guide: `docs/ai-context/24_USER.md` | on-demand  |
-| Auth          | `auth.identity`         | Authentication. ISSUANCE via `AuthServiceContract` (mint JWT with iss/aud/jti, asymmetric RS/ES/PS signing; PATs with expiry + abilities; web/AJAX session login). VERIFICATION via SecurityLayers wired in `withSecurity([...])`: `JwtAuthLayer` (iss/aud/leeway, `jti` deny-list via CachePort) + `PersonalAccessTokenLayer`. `SessionAuthStage` (@ after.load p22) attaches a session Identity so the `auth` filter covers token AND session callers. Routes `/auth/login`, `/auth/logout`, `/auth/me`. CLI `auth:tokens:prune`. `requires: ["database.management","crypto.services","user.management"]`. Full guide: `docs/ai-context/25_AUTH.md` | on-demand (SecurityLayers wired in bootstrap) |
-| OAuth2        | `oauth.server`          | Native OAuth 2.1 + OIDC authorization server (no new vendor — on `firebase/php-jwt`). Grants: authorization_code (+PKCE), client_credentials, refresh_token (rotation + family reuse-detection), password, device_code (RFC 8628). Endpoints `/oauth/{authorize,token,device_authorization,device,userinfo,introspect,revoke,jwks}` + RFC 8414 / OIDC discovery. Access tokens are platform JWTs (verified by Auth's `JwtAuthLayer`); scopes namespaced as `scope:*` in `permissions`; `aud`=resource + `azp`=client; revoke = refresh-family + JWT `jti` deny-list. CONTROL-PLANE: serve on the apex/central host. CLI `oauth:client:{create,list,revoke,rotate}`, `oauth:prune`. `requires: ["database.management","crypto.services","user.management","view.rendering"]`. Full guide: `docs/ai-context/26_OAUTH2.md` | on-demand  |
+| Auth          | `auth.identity`         | Authentication — the ONLY home for sessions/tokens. ISSUANCE via `AuthServiceContract` (JWT iss/aud/jti, RS/ES/PS signing; PATs w/ expiry+abilities; session login + remember-me `Recaller`). VERIFICATION via SecurityLayers in `withSecurity([...])`: `JwtAuthLayer` (jti deny-list) + `PersonalAccessTokenLayer`; `SessionAuthStage` @ after.load p22. **`RefreshTokenServiceContract`** (revocable first-party sessions, one-time-use rotation + family reuse detection, `refresh_tokens` table, tenant-agnostic — `tnt` is a passthrough hint). **`AuthManager`** manages named guards+providers (`config/auth.php`, filesystem-scanned `Drivers/`); `ModelUserProvider`+`AuthUserProxy` (HasApiTokens, emits `Identity`); `StatefulSessionGuard` (attempt/login/logout/once/basic/viaRemember); `Guard` read-only projection w/ **hierarchical scope inheritance** (`ScopeInheritance`); `PasswordBroker` (CachePort reset tokens). Routes `/auth/{login,logout,me}`, `/auth/tokens` (PAT mgmt), `/auth/token/refresh` (transient SPA token), `/auth/refresh` (refresh-token rotation). Controller concerns `InteractsWithAuth`/`InteractsWithAuthManager`. CLI `auth:tokens:prune`. `requires: ["database.management","crypto.services","user.management"]`. Full guide: `docs/ai-context/25_AUTH.md` | on-demand (SecurityLayers wired in bootstrap) |
+| OAuth2        | `oauth.server`          | Native OAuth 2.1 + OIDC authorization server (no new vendor — on `firebase/php-jwt`). Grants: authorization_code (+PKCE), client_credentials, refresh_token (rotation + family reuse-detection), password, device_code (RFC 8628). Endpoints `/oauth/{authorize,token,device_authorization,device,userinfo,introspect,revoke,jwks}` + RFC 8414 / OIDC discovery. Access tokens are platform JWTs (verified by Auth's `JwtAuthLayer`); scopes namespaced as `scope:*` in `permissions`; `aud`=resource + `azp`=client; revoke = refresh-family + JWT `jti` deny-list. Self-service mgmt API (owner-scoped): `/oauth/clients` (CRUD, `owner_id` column), `/oauth/authorized-tokens` (list/revoke granted apps), `/oauth/scopes` (`ScopeRegistry` catalogue w/ descriptions). CONTROL-PLANE: serve on the apex/central host. CLI `oauth:client:{create,list,revoke,rotate}`, `oauth:prune`. `requires: ["database.management","crypto.services","user.management","view.rendering"]`. Full guide: `docs/ai-context/26_OAUTH2.md` | on-demand  |
+| Pageflow      | `http.pageflow`         | Inertia-style SPA bridge. `PageflowResponder` returns a component + props; negotiates a JSON page object (XHR nav) vs an HTML shell (full load) with a version stage (stale client → 409 hard-reload). Shared props via `pageflow_share()`; CSRF mints the kernel `CsrfTokenLayer` token (bind cookie via `PAGEFLOW_CSRF_COOKIE` — MUST match the layer's `bindCookie`). Ships a React client in `plugins/Pageflow/ui/` (federated, not vendored — see below). CLI `pageflow:types`. `requires: []` | on-demand  |
+| ViteManifest  | `vite.manifest`         | `ViteContract` — resolves Vite build assets for HTML shells: hashed `<script>`/`<link>` + preloads in prod (`manifest-<surface>.json`), or the dev-server URLs + `@vite/client` + React-refresh under HMR (a `<surface>-hot` file). Dependency-free (no Laravel globals); **surfaces** replace a mode registry. Helpers `vite()`/`vite_asset()`/`vite_react_refresh()`. `requires: []`. Guide: `plugins/ViteManifest/README.md` | on-demand  |
+
+**Frontend / plugin UI federation (`hkm ui`).** Each project owns a per-project
+frontend (template in `tools/src/templates/frontend/`, scaffolded by `hkm ui
+init`): buildable apps are **surfaces** (`src/surfaces/<name>/`, vite-discovered —
+no mode registry) and the shared shadcn design system lives in `src/shared/ui`. A
+plugin MAY ship its own UI in `plugins/<Name>/ui/` (declared in `ui/ui.json`:
+alias, entry, and a `surfaces` map for admin/site pages). `hkm ui sync` mirrors
+every ENABLED plugin's `ui/` into `frontend/plugins/<slug>/` and regenerates
+`tsconfig.plugins.json` (the single source of path aliases — `tsconfig.json`
+`extends` it, so vite AND TypeScript resolve `@pageflow`, `@user`, … from one
+file). Surfaces glob plugin pages per face (`plugins/*/admin|site/Pages/**`);
+project pages win on collision. Full guide:
+`tools/src/templates/frontend/docs/HOW_IT_WORKS.md`.
 
 **Adding a new plugin:** create `plugins/{Name}/`, implement all GDA layers under
 `Plugins\{Name}\`, then add `Plugins\{Name}\Provider::class` to the relevant
 `projects/{project}/bootstrap/app.php`.
+
+---
+
+## I18N — TRANSLATION & LOCALIZATION (`Plugins\I18n\`, solves `i18n.translation`)
+
+File-based translator for localized messages (validation, UI copy). On-demand
+(`requires: []`); exposes `Plugins\I18n\Translator`. Lang files live at
+`{dir}/{locale}/{group}.php` and `return` a flat/nested array; lookups use
+dotted `group.key` notation. Translation NEVER throws — a missing key falls back
+to the fallback locale, then returns the key itself.
+
+### Translator API (`Plugins\I18n\Translator`)
+
+```php
+$t->get('validation.required', ['field' => 'email']);   // → "The email field is required."
+$t->choice('cart.apples', 5);                           // pluralization (see below)
+$t->has('promo.banner');                                // target locale only (no fallback)
+$t->setLocale('fr'); $t->locale();                      // active locale
+```
+
+- **Placeholders** — `:name` substitution with three cases: a replace key `name`
+  fills `:name`, `:Name`, `:NAME`. Keys are applied **longest-first**, so `:min`
+  can never corrupt `:minutes` (`strtr` under the hood — do NOT regress this to a
+  per-key `str_replace` loop).
+- **Pluralization** — `choice($key, $count, $replace)` splits the line on `|`.
+  Simple `singular|plural` (count===1 → first, else second) OR explicit ranges
+  `{0} none|[1,19] some|[20,*] many`. `:count` is auto-supplied. For 3+ forms use
+  ranges — the simple form is two-way only.
+- Path-traversal guarded: locale/group must match `/^[A-Za-z0-9_\-]+$/`.
+
+### Per-request locale — `LocaleStage` (after.load, priority 45)
+
+`Provider::boot()` registers `LocaleStage` which negotiates the locale from
+`Accept-Language` against `APP_LOCALES` (comma-separated) via
+`Request::negotiate()->language()`, calls `setLocale()`, and binds the Translator
+into `Plugins\I18n\Support\Lang` for the request (cleared in a `finally` — no
+Swoole leak). A route must load the module (be in its dependency graph) for the
+stage to bind — a bare `__project__` route needs `"requires":
+["i18n.translation"]`.
+
+### Global helpers (`plugins/I18n/Support/helpers.php`, autoloaded via composer `files`)
+
+```php
+__('messages.welcome', ['name' => 'Sam']);      // alias of trans()
+trans('validation.email', ['field' => 'email'], 'fr');   // optional per-call locale
+trans_choice('cart.items', $count, ['cart' => 'bag']);
+lang_has('promo.banner');                        // false when unbound (CLI/worker)
+```
+
+Helpers degrade gracefully when no Translator is bound (CLI/worker, or a route
+that didn't load I18n): `trans`/`__` return the key, `lang_has` returns false.
+
+### Config (`module.json` config[])
+
+`APP_LOCALE` (active, default `en`), `APP_FALLBACK_LOCALE` (default `en`),
+`APP_LOCALES` (negotiation set for `LocaleStage`), `APP_LANG_PATH` (override the
+lang directory — projects point this at their own `resources/lang` to
+override/extend the plugin's built-in catalogue). The `psp-shop` project wires
+all four in `app/bootstrap/app.php` and ships `en`/`fr`/`es` catalogues with a
+live demo at `GET /i18n` + `/i18n/advanced`.
+
+```
+✓ Missing keys surface the key itself — never empty, never a throw.
+✓ Longest-key-first placeholder substitution — do not regress to naive str_replace.
+✓ 3+ plural forms → explicit {n}/[a,b] ranges, not bare singular|plural.
+✗ Reading APP_LOCALE via getenv() — use env() (project layer sets $_ENV).
+✗ Storing per-request locale in a static without clear() — LocaleStage owns that lifecycle.
+```
 
 ---
 
@@ -2114,3 +2216,6 @@ For deeper context on any layer, reference:
 - `@docs/ai-context/27_ENTITY_SUPPORT.md`      — Project\Support: DataCaster casting engine, TypeParser grammar, built-in + custom casts, DataConverter hydrator, the enterprise Entity base (GDA-safe decomposition of the legacy Active Record)
 - `@projects/Support/Casting/README.md`        — full casting + hydration cookbook
 - `@projects/Support/Entity/README.md`         — full Entity base reference + 18-part cookbook
+- `@plugins/ViteManifest/README.md`            — ViteManifest plugin: `ViteContract`, surface-aware asset resolution (hashed prod tags vs dev-server/HMR + React refresh), `vite()`/`vite_asset()`/`vite_react_refresh()` helpers, config
+- `@plugins/User/ui/README.md`                 — worked example of a plugin shipping UI for BOTH faces (admin + site pages), federation, per-surface page discovery, and the auth/permission/container-rebind notes
+- `@tools/src/templates/frontend/docs/HOW_IT_WORKS.md` — per-project frontend: surfaces (no mode registry), `hkm ui` federation, `tsconfig.plugins.json` as the single alias source, shadcn `@ui` kit, and how to add a page on the admin + project surfaces

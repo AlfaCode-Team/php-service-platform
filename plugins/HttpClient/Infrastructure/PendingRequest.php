@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Plugins\HttpClient\Infrastructure;
 
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HttpClientResponse;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\PendingRequestContract;
 
 /**
  * Immutable fluent builder for a single outbound request (GDA rewrite of the
@@ -14,14 +15,12 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\HttpClientResponse;
  *
  * Execution is delegated to CurlHttpClient so the transport lives in one place.
  */
-final class PendingRequest
+final class PendingRequest implements PendingRequestContract
 {
     /**
      * @param array<string, string> $headers
-     */
-    /**
-     * @param array<string, string> $headers
      * @param list<array{name: string, contents: string, filename: ?string}> $files
+     * @param ?list<string> $retryMethods
      */
     private function __construct(
         private readonly CurlHttpClient $client,
@@ -32,6 +31,7 @@ final class PendingRequest
         private readonly int $connectTimeout = 10,
         private readonly int $retry = 0,
         private readonly array $files = [],
+        private readonly ?array $retryMethods = null,
     ) {}
 
     public static function for(CurlHttpClient $client): self
@@ -39,44 +39,45 @@ final class PendingRequest
         return new self($client);
     }
 
-    public function baseUrl(string $url): self
+    public function baseUrl(string $url): static
     {
         return $this->with(['baseUrl' => rtrim($url, '/')]);
     }
 
     /** @param array<string, string> $headers */
-    public function withHeaders(array $headers): self
+    public function withHeaders(array $headers): static
     {
-        return $this->with(['headers' => $this->headers + array_change_key_case($headers, CASE_LOWER)]);
+        // array_merge (not +) so a re-set header overrides the previous value.
+        return $this->with(['headers' => array_merge($this->headers, array_change_key_case($headers, CASE_LOWER))]);
     }
 
-    public function withHeader(string $name, string $value): self
+    public function withHeader(string $name, string $value): static
     {
         return $this->withHeaders([$name => $value]);
     }
 
-    public function withToken(string $token, string $type = 'Bearer'): self
+    public function withToken(string $token, string $type = 'Bearer'): static
     {
         return $this->withHeader('Authorization', trim($type . ' ' . $token));
     }
 
-    public function withBasicAuth(string $username, string $password): self
+    public function withBasicAuth(string $username, string $password): static
     {
         return $this->withHeader('Authorization', 'Basic ' . base64_encode($username . ':' . $password));
     }
 
-    public function asJson(): self
+    public function asJson(): static
     {
         return $this->with(['bodyFormat' => 'json']);
     }
 
-    public function asForm(): self
+    public function asForm(): static
     {
         return $this->with(['bodyFormat' => 'form']);
     }
 
     /** Switch to multipart/form-data — required before attach()ing files. */
-    public function asMultipart(): self
+    public function asMultipart(): static
     {
         return $this->with(['bodyFormat' => 'multipart']);
     }
@@ -84,31 +85,37 @@ final class PendingRequest
     /**
      * Attach an in-memory file to a multipart request. Implies asMultipart().
      */
-    public function attach(string $name, string $contents, ?string $filename = null): self
+    public function attach(string $name, string $contents, ?string $filename = null): static
     {
         $files = $this->files;
         $files[] = ['name' => $name, 'contents' => $contents, 'filename' => $filename];
         return $this->with(['bodyFormat' => 'multipart', 'files' => $files]);
     }
 
-    public function acceptJson(): self
+    public function acceptJson(): static
     {
         return $this->withHeader('Accept', 'application/json');
     }
 
-    public function timeout(int $seconds): self
+    public function timeout(int $seconds): static
     {
         return $this->with(['timeout' => max(1, $seconds)]);
     }
 
-    public function connectTimeout(int $seconds): self
+    public function connectTimeout(int $seconds): static
     {
         return $this->with(['connectTimeout' => max(1, $seconds)]);
     }
 
-    public function retry(int $times): self
+    public function retry(int $times): static
     {
         return $this->with(['retry' => max(0, $times)]);
+    }
+
+    /** @param list<string> $methods */
+    public function retryMethods(array $methods): static
+    {
+        return $this->with(['retryMethods' => array_map('strtoupper', $methods)]);
     }
 
     // ── Verbs ────────────────────────────────────────────────────────────────
@@ -152,6 +159,9 @@ final class PendingRequest
         $options['timeout']         = $this->timeout;
         $options['connect_timeout'] = $this->connectTimeout;
         $options['retry']           = $this->retry;
+        if ($this->retryMethods !== null) {
+            $options['retry_methods'] = $this->retryMethods;
+        }
 
         return $this->client->request($method, $this->resolveUrl($url), $options);
     }
@@ -195,6 +205,7 @@ final class PendingRequest
             connectTimeout: $changes['connectTimeout'] ?? $this->connectTimeout,
             retry:          $changes['retry']          ?? $this->retry,
             files:          $changes['files']          ?? $this->files,
+            retryMethods:   $changes['retryMethods']   ?? $this->retryMethods,
         );
     }
 }

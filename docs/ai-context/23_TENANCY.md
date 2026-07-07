@@ -12,7 +12,7 @@
 Maps an incoming request to **one tenant**, then rebinds `DatabasePort` to that
 tenant's **isolated database** for the request, so every repository downstream
 transparently talks to the right DB. The control-plane tables (tenant registry,
-memberships, invitations, refresh tokens, hosts, audit) live in the **central**
+memberships, invitations, hosts, audit) live in the **central**
 database and are NEVER tenant-routed.
 
 ```
@@ -37,6 +37,23 @@ The pluggable `TenantIdentifier` seam decides WHICH tenant a request belongs to.
 `''` ⇒ no rebind: the request keeps the central `DatabasePort` (login, tenant
 picker, public/apex pages). Tenant-scoped routes must require auth themselves.
 
+**Activation — must be ESSENTIAL.** `TenantContextStage` is an always-on
+`after.load` hook, but it lazily resolves `TenantIdentifier` + the connection
+resolver from the **request container** (`has()`-guarded). Those bindings only
+exist when `Tenancy::register()` ran, so Tenancy must be in
+`withEssentialModules([...])` — if it is merely on-demand, a route that doesn't
+pull `tenancy.routing` into its graph silently no-ops (the tenant is never
+identified → tenant-scoped routes 409 `tenant.required`).
+
+**`domain` mode + session login — cross-subdomain cookie.** Control-plane routes
+(`/auth/login`, `/ajx/me/tenants`, `/ajx/tenants/{id}/select`) run on the
+apex/central host (`shop.localhost` → `''` → central); tenant-scoped routes run on
+`<tenant>.shop.localhost` (→ that tenant's DB). For the apex login's session to
+carry to the tenant sub-domains, set the session cookie's domain to the shared
+base: `SESSION_COOKIE_DOMAIN=.shop.localhost` (host-only otherwise = 401 on the
+sub-domain). Reserved sub-domains (`TENANCY_RESERVED_SUBDOMAINS`: www, api, admin,
+…) resolve to central, never a tenant.
+
 ---
 
 ## REQUEST ROUTING — `TenantContextStage` (after.load, priority 5)
@@ -53,6 +70,9 @@ container exists, before route filters / `ExecuteStage`.
 5. `$container->bind('tenant.current', fn() => $tenantId)` — a **plain string
    container key** so request-scoped services that never see the `Request` (e.g.
    the User `AuditLogger`) can read the active tenant with no Tenancy import.
+   Use `bind()` (closure), NOT `instance()`: the kernel `ModuleContainer::instance()`
+   requires an `object`, so binding the bare tenant-id string there throws a
+   `TypeError` on every host/domain-routed request.
 6. On `UnknownTenantException` → 404 (and forget a stale cookie hint); on
    `TenantUnavailableException` → 403/410/503; connectivity faults feed the breaker.
 
@@ -87,12 +107,11 @@ picker. Properties:
 | `TenantConnectionResolverContract` | `for($tenantId): DatabasePort` (+ breaker) |
 | `MembershipServiceContract` | `myTenants`, `isActiveMember`, `selectTenant` |
 | `InvitationServiceContract` | email invite → seat (`invite`, `accept`) |
-| `RefreshTokenServiceContract` | one-time-use rotation, re-checks membership |
 | `TenantHostRegistryContract` | hostname → tenant_id resolution |
 | `TenantHostServiceContract` | `add`/`verify`/`makePrimary`/`remove` custom hosts |
 
 Internal ports (`Application/Ports/`): `MembershipReader`/`MembershipWriter`,
-`InvitationStore`, `RefreshTokenStore`, `TenantHostStore`, `AuditSink` (write),
+`InvitationStore`, `TenantHostStore`, `AuditSink` (write),
 `AuditReader` (read), `DnsResolver`.
 
 ---
@@ -104,7 +123,6 @@ Internal ports (`Application/Ports/`): `MembershipReader`/`MembershipWriter`,
 | `tenants` | `TenantRegistry` | registry; `db_password_enc` encrypted via `EncryptionPort` |
 | `user_tenants` | `MembershipRepository` | M:N user↔tenant + role/status; FK → central `users`/`tenants` |
 | `tenant_invitations` | `InvitationRepository` | email onboarding, hashed token |
-| `refresh_tokens` | `RefreshTokenRepository` | one-time rotation; `family_id` for reuse detection |
 | `tenant_hosts` | `TenantHostRepository` | PK is **`host_id`** (not `id`); custom domains + DNS verify |
 | `audit_log` | write `AuditTrail` / read `AuditLogRepository` | append-only; keyset-paginated reads |
 
@@ -179,8 +197,7 @@ in `domain` mode (tenants are provisioned by the project's own tooling there).
 - `GET /ajx/me/tenants` → list my tenants. `POST /ajx/tenants/{id}/select` →
   re-verifies membership, mints a `tnt`-scoped access JWT.
 - `POST /ajx/invitations/accept` → join a tenant from an emailed invite.
-- `POST /ajx/auth/refresh` → one-time refresh-token rotation (re-checks
-  membership; mints access JWT; `family_id` reuse detection).
+- Refresh-token rotation is NOT here — it moved to `Plugins\Auth` (`POST /auth/refresh`). Tenancy re-checks the tenant seat only at tenant-SELECT.
 - Custom hosts: `GET/POST /ajx/tenant/hosts`, `…/{hostId}/verify|primary`, DELETE.
 
 The signed `tnt` claim is a **hint, not authority** — authorization still keys on
@@ -192,7 +209,7 @@ a revoked seat loses access before token expiry.
 ## ABSOLUTE RULES
 
 ```
-✓ Control-plane tables (tenants, user_tenants, invitations, refresh_tokens, hosts, audit_log) are CENTRAL — pin to ConnectionManager default.
+✓ Control-plane tables (tenants, user_tenants, invitations, hosts, audit_log) are CENTRAL — pin to ConnectionManager default. (refresh_tokens now belongs to Plugins\Auth.)
 ✓ TenantContextStage rebinds DatabasePort per request ONLY; never into CoreContainer.
 ✓ Tenant DB users: privileges scoped to their own database; MySQL accounts loopback/host-pinned, never '%'.
 ✓ Membership assignment travels on the user.registered event payload (outbox), idempotent upsert.

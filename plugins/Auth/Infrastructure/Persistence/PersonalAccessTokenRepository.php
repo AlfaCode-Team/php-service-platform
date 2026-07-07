@@ -89,6 +89,27 @@ final class PersonalAccessTokenRepository
         ];
     }
 
+    /**
+     * List every token issued to a user (newest first), WITHOUT the hash. Feeds
+     * AuthServiceContract::tokensFor() — the GDA replacement for HasApiTokens.
+     *
+     * @return list<array{id:string,name:string,abilities:mixed,expires_at:?string,last_used_at:?string,created_at:?string}>
+     */
+    public function findByUser(string $userId): array
+    {
+        try {
+            $rows = $this->db->query(
+                "SELECT id, name, abilities, expires_at, last_used_at, created_at
+                 FROM {$this->table} WHERE user_id = :user_id ORDER BY created_at DESC",
+                ['user_id' => $userId]
+            );
+        } catch (\PDOException $e) {
+            throw new RepositoryException('Failed to list access tokens', layer: 'repository.auth', previous: $e);
+        }
+
+        return array_values($rows);
+    }
+
     /** Stamp the token's last-use time (best-effort observability/anomaly detection). */
     public function touch(string $id): void
     {

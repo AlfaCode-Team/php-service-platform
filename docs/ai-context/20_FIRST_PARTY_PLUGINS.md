@@ -16,10 +16,10 @@ project bootstrap (most are already in `app/bootstrap/base.php` or
 | `SecurityFilters` | `http.security_filters` | global hooks (CORS, SecureHeaders) + route-filter aliases (`auth`, `throttle`, `hmac`, `shield`) |
 | `Crypto` | `crypto.services` | `EncryptionPort` + `HashingPort` adapters |
 | `Validation` | — (library) | `Validator` rules engine |
-| `I18n` | `i18n.translation` | `Translator` |
+| `I18n` | `i18n.translation` | `Translator` — file-based `{APP_LANG_PATH}/{locale}/{group}.php`, dotted `group.key`; `:name`/`:Name`/`:NAME` placeholders (longest-first `strtr`); `choice()` pluralization (`singular\|plural` or ranges `{0}`/`[1,19]`/`[20,*]`); never throws (miss → fallback locale → key). `LocaleStage` (after.load p45) negotiates `Accept-Language` vs `APP_LOCALES` + binds global helpers `__()`/`trans()`/`trans_choice()`/`lang_has()` |
 | `Support` | — (library) | `Collection`, `Arr`, `Str`, `Resource`, `collect()` |
 | `Mail` | `mail.smtp` | `MailPort` SMTP adapter |
-| `Pageflow` | `http.pageflow` | `PageflowResponder` (Inertia-style SPA bridge) |
+| `Pageflow` | `http.pageflow` | `PageflowResponder` + `PageflowChannel` (Inertia v2 SPA bridge: CSRF, validation/precognition, reactive props, auth, offline) |
 | `DevTools` | `dev.tooling` | `make:*`, `module:list/info`, `routes:list`, `project:list` |
 | `Storage` | `storage.local` | `StoragePort` — local disk + S3 driver (Flysystem), signed URLs |
 | `View` | `view.rendering` | `ViewRendererContract` — PHP template engine (layouts, sections, decorators) |
@@ -27,7 +27,7 @@ project bootstrap (most are already in `app/bootstrap/base.php` or
 | `Session` | `session.management` | `SessionPort` — file/array/cookie handlers, flash, CSRF, lazy persist |
 | `Cookie` | `http.cookies` | `CookieJar` — queued cookies, encrypt/decrypt via `EncryptionPort` |
 | `RedisCache` | `cache.redis` | `CachePort` + `QueuePort` — ext-redis, in-memory fallback |
-| `Tenancy` | `tenancy.routing` | `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `RefreshTokenServiceContract` + `TenantHostServiceContract` — database-per-tenant routing + selection/invitation/refresh/custom-host flows. **Deep dive: [23_TENANCY.md](23_TENANCY.md)** |
+| `Tenancy` | `tenancy.routing` | `TenantRegistryContract` + `TenantConnectionResolverContract` + `MembershipServiceContract` + `InvitationServiceContract` + `TenantHostServiceContract` — database-per-tenant routing + selection/invitation/custom-host flows. (Refresh tokens moved to `Plugins\Auth`.) **Deep dive: [23_TENANCY.md](23_TENANCY.md)** |
 | `User` | `user.management` | `UserServiceContract` — GLOBAL central identity (CRUD, credential/email verification, transactional outbox, audit_log). **Deep dive: [24_USER.md](24_USER.md)** |
 
 Activation: `Storage`, `View`, and `HttpClient` are **on-demand** (a consumer
@@ -112,14 +112,43 @@ return Response::html(
 ## HttpClient (outbound cURL)
 
 `HttpClientPort` adapter for Gateways. Dependency-free cURL with an immutable
-fluent builder (`pending()`), retry/backoff, and multipart uploads. Vendor errors
-are translated to `GatewayException`. On-demand: `{ "requires": ["http.client"] }`.
+fluent builder, safe retry/backoff, and manual multipart uploads. Vendor/transport
+errors are translated to `GatewayException`. On-demand: `{ "requires": ["http.client"] }`.
+
+The fluent builder is reachable **through the port** — `HttpClientPort::pending():
+PendingRequestContract` — so a Gateway typed against the kernel contract (never the
+concrete adapter) can still use `baseUrl()`, `withToken()`, `asForm()`, `attach()`,
+etc. Both `pending()` and the returned `PendingRequestContract` live in the kernel
+`Ports` namespace.
 
 ```php
 $res = $client->pending()->acceptJson()->withToken($t)->post($url, $payload);
 if ($res->ok()) { $data = $res->json(); }
 $client->pending()->asMultipart()->attach('file', $bytes, 'a.png')->post($url);
 ```
+
+Hardening / behaviour to rely on:
+
+- **Retries are idempotent-only by default.** `retry(n)` retries transport failures
+  AND transient responses (5xx / 429), but ONLY for `GET/HEAD/PUT/DELETE/OPTIONS/TRACE`
+  — a POST/PATCH is never silently re-executed. Widen deliberately (e.g. an
+  idempotency-key POST) with `->retryMethods([...])` (builder) or the `retry_methods`
+  request option. Backoff is coroutine-aware (OpenSwoole/Swoole `Coroutine::usleep`,
+  else `usleep`) so it never blocks the worker.
+- **Header injection is rejected** — CR/LF in any header name/value throws; multipart
+  field/file names are stripped of CR/LF and `"`.
+- **JSON bodies use `JSON_THROW_ON_ERROR`** — an un-encodable payload throws a
+  `GatewayException`, never ships a silent `{}`.
+- **OOM guard** — responses are capped at `HTTP_CLIENT_MAX_RESPONSE_BYTES`
+  (default 32 MiB) via an aborting cURL progress callback.
+- TLS verification on by default; gzip/deflate negotiated transparently; `NOSIGNAL`
+  set for threaded/Swoole SAPIs.
+
+Config env: `HTTP_CLIENT_TIMEOUT` (30), `HTTP_CLIENT_CONNECT_TIMEOUT` (10),
+`HTTP_CLIENT_RETRY` (0), `HTTP_CLIENT_MAX_RESPONSE_BYTES` (33554432).
+
+Live demo: `HttpClientController` in `psp-shop` (`/http/get`, `/http/fluent`,
+`/http/post`, `/http/error`).
 
 ## Session (essential)
 
@@ -357,13 +386,83 @@ UserResource::collection($users)->toArray();
 (STARTTLS/SSL, AUTH LOGIN). Bound only when `SMTP_HOST` is set, so unconfigured
 projects are unaffected. Renders PHP-template views or inline HTML.
 
-## Pageflow (SPA bridge)
+## Pageflow (SPA bridge — `http.pageflow`)
 
-Server side of an Inertia-style protocol. `PageflowResponder::render($request,
-$component, $props)` returns JSON for `X-Pageflow` XHR navigations or an HTML
-shell (mounting into `{{app}}`) on first load, and honours partial reloads.
+A fork of **Inertia.js v2**, rebranded and wired into the kernel, with
+platform-native capabilities Inertia lacks. Server side + the React client both
+live in `plugins/Pageflow/` (PHP) and `plugins/Pageflow/ui/` (client). Full usage
+guide: `plugins/Pageflow/ui/PAGEFLOW_GUIDE.pdf`.
+
+### Core protocol
+
+`PageflowResponder::render($request, $component, $surface, $props = [],
+$viteEntry = null, $loadPage = true, $cacheable = false)` returns a JSON page
+object for `X-Pageflow` XHR navigations
+or an HTML shell on first load (the client boots from the root element's
+**`data-page`** attribute — `PageflowPage::mount($appId)` — NOT
+`window.initialPage`). Honours partial reloads (`X-Pageflow-Partial-*`).
 `PageflowVersionStage` returns `409 + X-Pageflow-Location` on stale assets.
-The React client lives in the top-level `frontend/` workspace.
+Shared props via `pageflow_share('key', fn($request) => …)`.
+
+### CSRF
+
+The responder renders `<meta name="csrf-token">` into the HTML head (minted from
+`APP_KEY` + the session-cookie binding via `CsrfTokenLayer::make`). The client
+reads it and sends `X-CSRF-Token` on mutations — **same-origin only** (never
+leaked cross-origin). `GET /pageflow/csrf` (throttled) refreshes an expired token
+for long-lived tabs; the client's axios interceptor auto-refreshes on a CSRF 403.
+The token is intentionally NOT shared as a prop (kept out of JSON / SW cache).
+
+### Native validation & precognition
+
+`PageflowValidationStage` turns a kernel `ValidationException` into either a
+`422 {errors}` (precognition) or a session-flashed **303 redirect-back** (normal
+submit) — controllers just throw via their DTOs; the `errors` shared prop
+surfaces them and `useForm` shows them (`preserveState` keeps the form). The
+303 `Location` is reduced to a same-origin path (no open redirect). Precognition
+(`Precognition: true`) runs validation only; a controller short-circuits with
+`pageflow_precognition($request)` → `PageflowResponder::precognitionSuccess()`.
+`PageflowPrecognitionStage` flags the request (`precognition` attribute) so a
+repo/service can refuse writes.
+
+### Reactive props (secure server push)
+
+`PageflowChannel` (CachePort-backed): a Service calls
+`$channel->touch("t:{$tenantId}:dashboard", ['orders'])` after commit; the
+tenant-scoped `GET /pageflow/stream` SSE endpoint (auth-gated) pushes **stale key
+names only — never data**. The client (`useReactiveProps`) reacts with a normal
+authorized partial reload. Reconnect-safe via SSE `id:`/`Last-Event-ID`; bounded
+lifetime (`PAGEFLOW_STREAM_MAX_SECONDS`). Requires OpenSwoole for real push.
+
+### Auth projection
+
+`pageflow_auth` shared prop (via `PageflowAuth`, override with
+`pageflow_auth_projection()`) exposes userId/tenant/roles/permissions —
+**never tokens**. Client `useAuth()`/`<Can>` gate UI (UX only; server stays the
+authority). `useFlushOnIdentityChange()` purges prefetch + SW cache on
+login/logout/tenant-switch.
+
+### Offline (opt-in)
+
+`registerPageflowSW()` + `pageflow-sw.js`: static assets cache-first; page objects
+cached **only** when the server opts in (`render(..., cacheable: true)` →
+`X-Pageflow-Cache: 1`, or `Cache-Control: public`) — authenticated pages are never
+cached by default. `no-store`/`private` always win.
+
+### Client API (`@pageflow/react`)
+
+`<Link>`, `useForm` (+ `resetOnSuccess`/`resetOnError`), `usePage`, `<Head>`,
+`<Form validateOn="blur">`, `usePrecognition`, `useReactiveProps`, `useAuth`,
+`<Can>`, `useDirtyGuard`, `usePoll`, `usePrefetch`, `useRemember`, `Deferred`,
+`WhenVisible`, `installCsrfAutoRefresh`, `registerPageflowSW`. Batched deferred
+props (N groups → 1 request). CLI `pageflow:types` generates end-to-end `.d.ts`.
+
+### Endpoints & env
+
+Routes: `GET /pageflow/csrf` (throttle), `GET /pageflow/stream` (auth +
+throttle). Env: `PAGEFLOW_VERSION`, `PAGEFLOW_ROOT_VIEW`, `PAGEFLOW_APP_ID`,
+`PAGEFLOW_CSRF_COOKIE`, `PAGEFLOW_CSRF_LIFETIME`, `PAGEFLOW_STREAM_INTERVAL`,
+`PAGEFLOW_STREAM_MAX_SECONDS`, `PAGEFLOW_PRECOGNITION_ROLLBACK`.
 
 ## SiteSEO (`seo.management`, on-demand)
 
@@ -461,15 +560,11 @@ talks to the tenant DB.
   lifetime. A revoked seat fails selection (`403`, audited `tenant.switch_denied`)
   and loses access on an already-issued token via the per-request re-check.
 - **Control-plane tables** (central migrations): `tenants`, `user_tenants`,
-  `tenant_invitations` (email onboarding, hashed token), `refresh_tokens`
-  (revocable, hash-only), `audit_log` (append-only).
+  `tenant_invitations` (email onboarding, hashed token), `audit_log` (append-only).
 - **Invitations** (`InvitationServiceContract`): `invite()` returns a one-time
   token (hash stored); `accept()` requires the user's verified email to match,
   creates/activates the seat (idempotent), audits `member.join`; `revoke()`.
-- **Refresh tokens** (`RefreshTokenServiceContract`): `issue()` / `rotate()` /
-  `revoke()` / `revokeAllForUser()`. Rotation is one-time-use (revokes the
-  presented token), re-checks `user_tenants` for scoped tokens, and mints a
-  paired access JWT. Tunable via `TENANCY_REFRESH_TTL` / `TENANCY_ACCESS_TTL`.
+- **Refresh tokens** moved to `Plugins\Auth` (`RefreshTokenServiceContract`, `POST /auth/refresh`) — tenant-agnostic; the tenant seat check stays at tenant-SELECT here.
 
 Env: `TENANCY_MODE` (`claim` = JWT `tnt` claim, default · `domain` = Host
 sub-domain), `TENANCY_BASE_DOMAINS`, `TENANCY_REGISTRY_TTL`,

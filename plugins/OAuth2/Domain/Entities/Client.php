@@ -35,6 +35,7 @@ final class Client extends Entity
         array $scopes,
         bool $confidential,
         bool $revoked = false,
+        ?string $ownerId = null,
     ): self {
         $c = (new self())->forceFill([
             'id'           => $id,
@@ -45,10 +46,33 @@ final class Client extends Entity
             'scopes'       => $scopes,
             'confidential' => $confidential,
             'revoked'      => $revoked,
+            'ownerId'      => $ownerId,
         ]);
         $c->syncOriginal();
 
         return $c;
+    }
+
+    /** The user_id that registered this client, or null for a first-party client. */
+    public function ownerId(): ?string
+    {
+        $owner = $this->ownerId ?? null;
+
+        return is_string($owner) && $owner !== '' ? $owner : null;
+    }
+
+    /** A secret-free public view for the self-service management API. */
+    public function toPublicArray(): array
+    {
+        return [
+            'id'            => (string) $this->id,
+            'name'          => (string) $this->name,
+            'redirect_uris' => $this->redirectUris ?? [],
+            'grant_types'   => $this->grantTypes ?? [],
+            'scopes'        => $this->scopes ?? [],
+            'confidential'  => (bool) $this->confidential,
+            'revoked'       => (bool) $this->revoked,
+        ];
     }
 
     public function isPublic(): bool

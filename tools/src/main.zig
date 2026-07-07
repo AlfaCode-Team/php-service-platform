@@ -4,7 +4,10 @@ const update_cmd = @import("commands/update.zig");
 const run_cmd = @import("commands/run.zig");
 const list_cmd = @import("commands/list.zig");
 const plugins_cmd = @import("commands/plugins.zig");
+const ui_cmd = @import("commands/ui.zig");
 const cli_cmd = @import("commands/cli.zig");
+const doctor_cmd = @import("commands/doctor.zig");
+const kernel = @import("lib/kernel.zig");
 const prompt = @import("lib/prompt.zig");
 
 fn printHelp() void {
@@ -17,6 +20,7 @@ fn printHelp() void {
     prompt.item("hkm worker [args]", "run a project's queue worker");
     prompt.item("hkm list", "list registered projects (alias: ls)");
     prompt.item("hkm plugins [path|name]", "analyse a project's enabled plugins/modules");
+    prompt.item("hkm ui [sync|list|link|clean]", "federate enabled plugins' UIs into the frontend");
     prompt.item("hkm update <path|name>", "refresh a project's kernel registry entry");
     prompt.item("hkm doctor", "diagnose the local environment");
     prompt.item("hkm help", "show this help");
@@ -37,17 +41,8 @@ fn envGet(allocator: std.mem.Allocator, map: *std.process.Environ.Map, key: []co
     return try allocator.dupe(u8, v);
 }
 
-fn findCliPath(allocator: std.mem.Allocator, env_map: *std.process.Environ.Map) ![]const u8 {
-    if (try envGet(allocator, env_map, "HKM_CLI_PATH")) |v| {
-        return v;
-    }
-
-    if (try envGet(allocator, env_map, "HKM_KERNEL_HOME")) |kernel_home| {
-        return try std.fmt.allocPrint(allocator, "{s}/bin/hkm", .{kernel_home});
-    }
-
-    // Default for packaged installs (Linux/macOS)
-    return try std.fmt.allocPrint(allocator, "/opt/hkm-kernel/bin/hkm", .{});
+fn findCliPath(allocator: std.mem.Allocator, io: std.Io, env_map: *std.process.Environ.Map) ![]const u8 {
+    return kernel.findCliPath(allocator, io, env_map);
 }
 
 fn phpBin(allocator: std.mem.Allocator, env_map: *std.process.Environ.Map) ![]const u8 {
@@ -104,6 +99,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const code = try plugins_cmd.run(allocator, io, &env_map, args);
         std.process.exit(code);
     }
+    if (std.mem.eql(u8, cmd, "ui")) {
+        const code = try ui_cmd.run(allocator, io, &env_map, args);
+        std.process.exit(code);
+    }
     if (std.mem.eql(u8, cmd, "cli")) {
         const code = try cli_cmd.run(allocator, io, &env_map, args, false);
         std.process.exit(code);
@@ -112,9 +111,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const code = try cli_cmd.run(allocator, io, &env_map, args, true);
         std.process.exit(code);
     }
+    if (std.mem.eql(u8, cmd, "doctor")) {
+        const code = try doctor_cmd.run(allocator, io, &env_map, args);
+        std.process.exit(code);
+    }
 
     const php = try phpBin(allocator, &env_map);
-    const cli = try findCliPath(allocator, &env_map);
+    const cli = try findCliPath(allocator, io, &env_map);
 
     var child_argv: std.ArrayList([]const u8) = .empty;
     defer child_argv.deinit(allocator);
