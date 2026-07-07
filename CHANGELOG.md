@@ -6,14 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-07-08
+
 ### Security
 - Scaffolded `.env` (which holds the generated `APP_KEY`) is now written
   `chmod 600` (owner-only); `~/.config/hkm/config.env` too.
 - Debug output is force-disabled when `APP_ENV=production`, even if `APP_DEBUG`
   was left `true` in a mis-set `.env` — production never leaks internals.
-- New projects ship an `app/public/.htaccess`: denies dotfiles (`.env`, `.git`),
-  disables directory listing, drops `X-Powered-By`, adds baseline security
-  headers, and routes through the single front controller.
+- New projects ship an `app/public/.htaccess` (Apache) and an
+  `app/nginx.conf.example` (nginx): deny dotfiles (`.env`, `.git`), disable
+  directory listing, drop `X-Powered-By`, add baseline security headers, and
+  route through the single front controller with docroot pinned to `app/public`.
 
 ### Added
 - `HKM_USERDATA_DIR` — relocate the persistent registry (`projects.json` +
@@ -107,7 +110,8 @@ macOS, and Windows, built and published automatically from a `v*` tag.
   (`phpunit.xml` is gitignored).
 - Windows cross-compilation: guarded POSIX-only raw-mode TTY code.
 
-[Unreleased]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.0...v1.0.1
