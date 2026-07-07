@@ -7,7 +7,9 @@ const plugins_cmd = @import("commands/plugins.zig");
 const ui_cmd = @import("commands/ui.zig");
 const cli_cmd = @import("commands/cli.zig");
 const doctor_cmd = @import("commands/doctor.zig");
+const upgrade_cmd = @import("commands/upgrade.zig");
 const kernel = @import("lib/kernel.zig");
+const banner = @import("lib/banner.zig");
 const prompt = @import("lib/prompt.zig");
 
 fn printHelp() void {
@@ -22,7 +24,9 @@ fn printHelp() void {
     prompt.item("hkm plugins [path|name]", "analyse a project's enabled plugins/modules");
     prompt.item("hkm ui [sync|list|link|clean]", "federate enabled plugins' UIs into the frontend");
     prompt.item("hkm update <path|name>", "refresh a project's kernel registry entry");
+    prompt.item("hkm upgrade [--check]", "check for / apply a kernel update");
     prompt.item("hkm doctor", "diagnose the local environment");
+    prompt.item("hkm version", "show the Sentinel banner + version (also --version, -v)");
     prompt.item("hkm help", "show this help");
     prompt.blank();
 
@@ -76,6 +80,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         printHelp();
         return;
+    }
+    if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v")) {
+        banner.printShort();
+        return;
+    }
+    if (std.mem.eql(u8, cmd, "version")) {
+        banner.print();
+        return;
+    }
+    if (std.mem.eql(u8, cmd, "upgrade") or std.mem.eql(u8, cmd, "self-update")) {
+        const code = try upgrade_cmd.run(allocator, io, &env_map, args);
+        std.process.exit(code);
     }
 
     // `new` / `update` are handled natively in Zig (no PHP required).
