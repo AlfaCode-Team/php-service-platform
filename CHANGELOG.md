@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-07
+
+### Changed
+- `hkm upgrade` now performs the update automatically for packaged installs:
+  it detects the OS, downloads the matching release artifact (`.deb` / `.tar.gz`
+  / `.zip`), and installs it (Linux: `apt`; macOS: extract + `install.sh`;
+  Windows: downloads and points at `install.bat`). Previously it only printed
+  manual instructions.
+
 ## [1.0.1] - 2026-07-07
 
 ### Changed
