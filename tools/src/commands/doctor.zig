@@ -1,7 +1,7 @@
 //! `hkm doctor` — diagnose the local environment before install / first run.
 //!
 //! Verifies the machine can actually run a PhpServicePlatform project:
-//!   • a `php` binary is on PATH (or HKM_PHP_BIN) and is >= 8.2
+//!   • a `php` binary is on PATH (or HKM_PHP_BIN) and is >= 8.4
 //!   • every REQUIRED PHP extension is loaded
 //!   • reports OPTIONAL extensions (redis, swoole, pdo drivers …) as hints
 //!   • at least one PDO driver is present
@@ -23,7 +23,7 @@ const EnvMap = std.process.Environ.Map;
 /// The PHP preflight. Kept as a single `-r` program so `hkm doctor` needs no
 /// files on disk. Prints a human table and exits non-zero on a hard failure.
 const preflight =
-    \\$reqPhp = '8.2.0';
+    \\$reqPhp = '8.4.1';
     \\$okPhp  = version_compare(PHP_VERSION, $reqPhp, '>=');
     \\printf("  php %-13s runtime %s (need >= %s) [%s]\n", '', PHP_VERSION, $reqPhp, $okPhp ? 'OK' : 'FAIL');
     \\$required = ['json','mbstring','ctype','tokenizer','filter','pdo','openssl','curl','fileinfo'];
@@ -88,8 +88,8 @@ pub fn run(allocator: std.mem.Allocator, io: Io, env: *EnvMap, args: []const []c
         prompt.item("tried", php);
         prompt.item("override", "set HKM_PHP_BIN=/full/path/to/php");
         prompt.blank();
-        prompt.section("Install PHP >= 8.2");
-        prompt.item("Debian/Ubuntu", "sudo apt install php8.2-cli php8.2-{mbstring,curl,pdo,mysql,xml}");
+        prompt.section("Install PHP >= 8.4");
+        prompt.item("Debian/Ubuntu", "sudo apt install php8.4-cli php8.4-{mbstring,curl,pdo,mysql,xml}");
         prompt.item("macOS (brew)", "brew install php");
         prompt.item("Windows", "winget install PHP.PHP  (or https://windows.php.net)");
         prompt.item("detail", @errorName(e));
@@ -101,7 +101,7 @@ pub fn run(allocator: std.mem.Allocator, io: Io, env: *EnvMap, args: []const []c
         prompt.ok("environment is ready — you can run `hkm run` / `hkm new`.");
     } else {
         prompt.warn("environment is INCOMPLETE — install the items marked required above.");
-        prompt.item("Debian/Ubuntu", "sudo apt install php8.2-{mbstring,curl,openssl,pdo,mysql,sqlite3}");
+        prompt.item("Debian/Ubuntu", "sudo apt install php8.4-{mbstring,curl,openssl,pdo,mysql,sqlite3}");
         prompt.item("macOS (brew)", "brew install php   # bundles the common extensions");
     }
     return code;
