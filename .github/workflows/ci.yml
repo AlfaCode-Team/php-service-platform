@@ -1,0 +1,61 @@
+name: CI
+
+# Runs on every push to main and on every PR targeting main, so the suite and
+# the native toolchain are validated on each change — not only at release time.
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── PHP test suite across supported versions ───────────────────────────────
+  tests:
+    name: PHPUnit (PHP ${{ matrix.php }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.3", "8.4"]
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }   # path-repo modules must be present
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer
+          extensions: mbstring, curl, pdo, pdo_sqlite, openssl, fileinfo, zip, intl
+          coverage: none
+      - name: Validate composer.json
+        run: composer validate --no-check-publish --no-check-all
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+      - name: Run test suite
+        run: vendor/bin/phpunit --no-coverage
+
+  # ── Native launcher: compile for every release target ──────────────────────
+  zig:
+    name: Zig build (${{ matrix.target }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-gnu
+          - x86_64-windows-gnu
+          - aarch64-macos
+          - x86_64-macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with: { version: "0.17.0-dev.657+2faf8debf" }
+      - name: Build launcher
+        working-directory: tools
+        run: zig build --release=small -Dtarget=${{ matrix.target }}
