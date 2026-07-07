@@ -96,11 +96,11 @@ pub fn resolveTemplatesDir(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !
     if (env.get("HKM_TEMPLATES_DIR")) |d| {
         if (d.len > 0) return util.trimSlash(d);
     }
-    if (env.get("HKM_KERNEL_HOME")) |h| {
-        if (h.len > 0) {
-            const c = try std.fmt.allocPrint(allocator, "{s}/tools/src/templates", .{util.trimSlash(h)});
-            if (templatesDirOk(io, c)) return c;
-        }
+    // The templates ship INSIDE the kernel payload at <kernel>/templates (they
+    // used to live under tools/, which is not shipped). Self-locate the kernel.
+    if (try kernel.resolveHome(allocator, io, env)) |home| {
+        const c = try std.fmt.allocPrint(allocator, "{s}/templates", .{home});
+        if (templatesDirOk(io, c)) return c;
     }
     // Locations relative to the installed executable (packaged distributions).
     if (std.process.executableDirPathAlloc(io, allocator)) |exe_dir| {
@@ -109,10 +109,10 @@ pub fn resolveTemplatesDir(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !
         const fhs = try std.fmt.allocPrint(allocator, "{s}/../share/hkm/templates", .{util.trimSlash(exe_dir)});
         if (templatesDirOk(io, fhs)) return fhs;
     } else |_| {}
-    // Infer the kernel root from the registry path: <kernel>/projects/projects.json.
+    // Fallback: infer the kernel root from the registry path.
     if (try registry.resolvePath(allocator, io, env)) |jsonPath| {
         if (util.parentOf(util.parentOf(jsonPath))) |kernel_root| {
-            const c = try std.fmt.allocPrint(allocator, "{s}/tools/src/templates", .{kernel_root});
+            const c = try std.fmt.allocPrint(allocator, "{s}/templates", .{kernel_root});
             if (templatesDirOk(io, c)) return c;
         }
     }
