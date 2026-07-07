@@ -48,15 +48,15 @@ final readonly class PoolConfiguration
         $int = static function (string $key, int $default): int {
             $value = env($key);
 
-            return $value === false || $value === '' ? $default : (int) $value;
+            return $value === null || $value === false || $value === '' ? $default : (int) $value;
         };
         $bool = static function (string $key, bool $default): bool {
             $value = env($key);
-            if ($value === false || $value === '') {
+            if ($value === null || $value === false || $value === '') {
                 return $default;
             }
 
-            return \in_array(strtolower($value), ['1', 'true', 'yes', 'on'], true);
+            return \in_array(strtolower((string) $value), ['1', 'true', 'yes', 'on'], true);
         };
 
         // DB_POOL_SIZE is accepted as an alias for the maximum size.

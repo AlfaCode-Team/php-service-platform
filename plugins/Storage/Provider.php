@@ -51,32 +51,32 @@ final class Provider implements ModuleContract
             return; // a project already provided StoragePort
         }
 
-        $driver = strtolower((string) (env('STORAGE_DRIVER') ?: 'local'));
+        $driver = (string) storage_config('driver', 'local');
 
         if ($driver === 's3') {
-            $bucket = env('STORAGE_S3_BUCKET') ?: '';
+            $bucket = (string) storage_config('s3.bucket', '');
             if ($bucket === '') {
                 return; // S3 selected but not configured — leave unbound
             }
-            $container->bind(StoragePort::class, static fn() => S3StorageAdapter::fromConfig(
+            $container->singleton(StoragePort::class, static fn() => S3StorageAdapter::fromConfig(
                 bucket:       $bucket,
-                region:       env('STORAGE_S3_REGION') ?: 'us-east-1',
-                key:          env('STORAGE_S3_KEY') ?: '',
-                secret:       env('STORAGE_S3_SECRET') ?: '',
-                endpoint:     env('STORAGE_S3_ENDPOINT') ?: null,
-                usePathStyle: filter_var(env('STORAGE_S3_PATH_STYLE') ?: 'false', FILTER_VALIDATE_BOOLEAN),
+                region:       (string) storage_config('s3.region', 'us-east-1'),
+                key:          (string) storage_config('s3.key', ''),
+                secret:       (string) storage_config('s3.secret', ''),
+                endpoint:     storage_config('s3.endpoint'),
+                usePathStyle: (bool) storage_config('s3.use_path_style', false),
             ));
             return;
         }
 
-        $root = env('STORAGE_ROOT') ?: '';
+        $root = (string) storage_config('local.root', '');
         if ($root === '') {
             return; // local driver not configured
         }
-        $container->bind(StoragePort::class, static fn() => new LocalStorageAdapter(
+        $container->singleton(StoragePort::class, static fn() => new LocalStorageAdapter(
             root:      $root,
-            urlBase:   env('STORAGE_URL_BASE') ?: '',
-            urlSecret: env('STORAGE_URL_SECRET') ?: '',
+            urlBase:   (string) storage_config('local.url_base', ''),
+            urlSecret: (string) storage_config('local.url_secret', ''),
         ));
     }
 

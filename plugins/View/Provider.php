@@ -56,40 +56,65 @@ final class Provider implements ModuleContract
         }
 
         $container->bind(ViewRendererContract::class, static function (): PhpViewRenderer {
-            $paths = self::splitList(env('VIEW_PATHS') ?: '');
+            // The compiled view manifest is the single source of truth for the
+            // deterministic priority cascade: project view paths first, plugin
+            // paths after, plus the namespace map for `plugin::view` lookups.
+            // (Built by CompileViewManifestStage at boot — see that stage.)
+            $manifest = self::loadViewManifest();
 
-            if ($paths === []) {
-                $paths = ['resources/views'];
-            }
+            $paths = $manifest['global'];
 
-            $paths = array_values(array_filter(array_map(function ($path) {
-
-                // Skip if already absolute
-                if (str_starts_with($path, '/') || preg_match('/^[A-Z]:\\\\/i', $path)) {
-                    return is_dir($path) ? $path : null;
+            // Optional env override/augmentation. VIEW_PATHS is PREPENDED so an
+            // operator can inject an even-higher-priority project path at runtime
+            // without ever letting a plugin outrank the project implicitly.
+            $envPaths = array_values(array_filter(array_map(static function (string $path): ?string {
+                if (str_starts_with($path, '/') || preg_match('/^[A-Za-z]:\\\\/', $path) === 1) {
+                    return is_dir($path) ? rtrim($path, '/') : null;
                 }
-
-                // Convert to project path
                 $projectPath = Paths::project($path);
-
                 return is_dir($projectPath) ? $projectPath : null;
+            }, self::splitList(env('VIEW_PATHS') ?: ''))));
 
-            }, $paths)));
+            $paths = array_values(array_unique(array_merge($envPaths, $paths)));
 
-
-
+            if ($paths === [] && $manifest['namespaces'] === []) {
+                // Last-resort default so a project with no declared views still works.
+                $default = Paths::project('resources/views');
+                if (is_dir($default)) {
+                    $paths[] = $default;
+                }
+            }
 
             return new PhpViewRenderer(
                 viewPaths: $paths,
                 extensions: self::splitList(env('VIEW_EXTENSIONS') ?: 'php') ?: ['php'],
                 decorators: [],
                 saveData: filter_var(env('VIEW_SAVE_DATA') ?: 'false', FILTER_VALIDATE_BOOLEAN),
+                namespaces: $manifest['namespaces'],
             );
         });
     }
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
     {
+    }
+
+    /**
+     * Load the compiled view manifest (project-first global cascade + namespace
+     * map). Returns an empty, well-shaped structure when the manifest has not
+     * been compiled yet, so the renderer degrades gracefully.
+     *
+     * @return array{global: list<string>, namespaces: array<string,list<string>>}
+     */
+    private static function loadViewManifest(): array
+    {
+        $path = Paths::cache('manifests/view-manifest.php');
+        $data = is_file($path) ? require $path : null;
+
+        return [
+            'global' => is_array($data['global'] ?? null) ? array_values($data['global']) : [],
+            'namespaces' => is_array($data['namespaces'] ?? null) ? $data['namespaces'] : [],
+        ];
     }
 
     /**

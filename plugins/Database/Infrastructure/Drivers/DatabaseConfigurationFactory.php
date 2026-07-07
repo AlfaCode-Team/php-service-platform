@@ -71,7 +71,7 @@ final class DatabaseConfigurationFactory
             'driver' => $env('DB_DRIVER') ?? 'sqlite',
             'host' => $env('DB_HOST'),
             'port' => $env('DB_PORT'),
-            'database' => $env('DB_DATABASE'),
+            'database' => $env('DB_DATABASE') ?? $env('DB_NAME'),
             'username' => $env('DB_USERNAME'),
             'password' => $env('DB_PASSWORD'),
             'charset' => $env('DB_CHARSET'),

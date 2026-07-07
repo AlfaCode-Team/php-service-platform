@@ -150,6 +150,7 @@ final class Provider implements ModuleContract
         $value = env($key);
 
         return $value !== false
-            && in_array(strtolower($value), ['1', 'true', 'yes', 'on'], true);
+            && $value !== null
+            && in_array(strtolower((string) $value), ['1', 'true', 'yes', 'on'], true);
     }
 }
