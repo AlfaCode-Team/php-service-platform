@@ -27,6 +27,23 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(config_tool);
 
+    // Also drop the native launcher + config tool into the repo-level bin/ (next
+    // to bin/psp) so `zig build` makes `bin/hkm` and `bin/hkm-config` runnable
+    // locally. build.zig lives in tools/, so "../bin" is the repo bin/.
+    //
+    // Guarded to NATIVE builds only: the cross-compiled bundle builds
+    // (`-Dtarget=…` in tools/bundle.sh) must never overwrite the local bin/ with
+    // a foreign-arch (Windows/macOS) binary. A dedicated `zig build bin` step is
+    // also exposed for running it on demand.
+    const to_bin = b.addUpdateSourceFiles();
+    to_bin.addCopyFileToSource(launcher.getEmittedBin(), "../bin/hkm");
+    to_bin.addCopyFileToSource(config_tool.getEmittedBin(), "../bin/hkm-config");
+    const bin_step = b.step("bin", "Copy hkm + hkm-config into the repo bin/");
+    bin_step.dependOn(&to_bin.step);
+    if (target.query.isNative()) {
+        b.getInstallStep().dependOn(&to_bin.step);
+    }
+
     const run_launcher = b.addRunArtifact(launcher);
 
     const run_step = b.step("run", "Run hkm launcher");
