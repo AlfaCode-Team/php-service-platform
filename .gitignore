@@ -6,6 +6,13 @@
 /bin/hkm-config
 
 
+# ── AI ASSISTANT / INTERNAL DOCS (kept local, NOT shipped to GitHub) ──
+/.claude/
+/CLAUDE.md
+/.github/copilot-instructions.md
+/docs/
+
+
 # ── COMPOSER ──────────────────────────────────────────────────
 /vendor/
 #(Uncomment if you want to ignore lock file for the library)
