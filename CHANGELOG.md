@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-07
+
+### Changed
+- The Sentinel ASCII banner + version now shows as the header of `hkm` and
+  `hkm help` (previously only on `hkm version`).
+
 ## [1.0.0] - 2026-07-07
 
 First native release — the framework ships as OS-native bundles for Linux,
