@@ -12,7 +12,7 @@
 #   • the PHP CLI (bin/psp) installed AS bin/hkm so the launcher's default
 #     passthrough path (<kernel>/bin/hkm) resolves.
 #
-# End users still need PHP >= 8.2 on PATH — `hkm doctor` verifies it.
+# End users still need PHP >= 8.4 on PATH — `hkm doctor` verifies it.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -111,7 +111,7 @@ if [[ "$want" == all || "$want" == linux ]]; then
   # composer is a hard dependency now: the package ships SOURCE, not vendor/, and
   # resolves dependencies on the target in postinst. Network access is required
   # at install time. In MODULES=git mode, git is also required to fetch modules.
-  DEPS="php-cli (>= 8.2), php-mbstring, php-curl, php-xml, php-zip, composer, ca-certificates"
+  DEPS="php-cli (>= 8.4), php-mbstring, php-curl, php-xml, php-zip, composer, ca-certificates"
   [ "$MODULES" = git ] && DEPS="$DEPS, git"
   cat > "$P/DEBIAN/control" <<EOF
 Package: hkm-kernel
@@ -221,7 +221,7 @@ EOF
 HKM Kernel — Windows
 ====================
 1. Extract this folder to C:\hkm  (or any path).
-2. Install PHP >= 8.2 (winget install PHP.PHP) and Composer, open a new terminal.
+2. Install PHP >= 8.4 (winget install PHP.PHP) and Composer, open a new terminal.
 3. Resolve dependencies (vendor/ is NOT bundled):
        cd C:\hkm\hkm-kernel
        install.bat

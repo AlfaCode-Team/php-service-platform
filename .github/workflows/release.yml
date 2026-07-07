@@ -23,7 +23,7 @@ jobs:
         with: { submodules: recursive }   # path-repo modules must be present
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.2"
+          php-version: "8.4"
           tools: composer
           extensions: mbstring, curl, pdo, pdo_sqlite, openssl, fileinfo, zip
       - name: Install dependencies (with dev)
@@ -42,7 +42,7 @@ jobs:
       - uses: mlugg/setup-zig@v1
         with: { version: "0.17.0-dev.657+2faf8debf" }
       - uses: shivammathur/setup-php@v2
-        with: { php-version: "8.2", tools: composer }
+        with: { php-version: "8.4", tools: composer }
       - name: Bundle (linux)
         run: VERSION="${GITHUB_REF_NAME#v}" ./tools/bundle.sh linux
       - uses: actions/upload-artifact@v4
@@ -59,7 +59,7 @@ jobs:
       - uses: mlugg/setup-zig@v1
         with: { version: "0.17.0-dev.657+2faf8debf" }
       - uses: shivammathur/setup-php@v2
-        with: { php-version: "8.2", tools: composer }
+        with: { php-version: "8.4", tools: composer }
       - name: Bundle (windows)
         run: VERSION="${GITHUB_REF_NAME#v}" ./tools/bundle.sh windows
       - uses: actions/upload-artifact@v4
@@ -76,7 +76,7 @@ jobs:
       - uses: mlugg/setup-zig@v1
         with: { version: "0.17.0-dev.657+2faf8debf" }
       - uses: shivammathur/setup-php@v2
-        with: { php-version: "8.2", tools: composer }
+        with: { php-version: "8.4", tools: composer }
       - name: Bundle (macos)
         run: VERSION="${GITHUB_REF_NAME#v}" ./tools/bundle.sh macos
       - uses: actions/upload-artifact@v4
