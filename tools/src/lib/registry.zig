@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const util = @import("util.zig");
+const kernel = @import("kernel.zig");
 
 const Dir = std.Io.Dir;
 const Io = std.Io;
@@ -33,6 +34,13 @@ pub fn resolvePath(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !?[]const
     }
     if (env.get("HKM_KERNEL_HOME")) |h| {
         if (h.len > 0) return try std.fmt.allocPrint(allocator, "{s}/projects/projects.json", .{trimSlash(h)});
+    }
+    // Self-locate the kernel relative to THIS executable (installed .deb/.app/zip
+    // or the dev monorepo). This is what makes `hkm run --pick` work on a packaged
+    // install with no env vars set — the registry lives at <kernel>/projects/.
+    if (try kernel.resolveHome(allocator, io, env)) |home| {
+        const p = try std.fmt.allocPrint(allocator, "{s}/projects/projects.json", .{home});
+        if (Dir.cwd().access(io, p, .{})) |_| return p else |_| {}
     }
     if (env.get("PWD")) |pwd| {
         if (pwd.len > 0) return findUpwards(allocator, io, pwd);
