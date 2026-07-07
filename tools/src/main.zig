@@ -9,6 +9,7 @@ const cli_cmd = @import("commands/cli.zig");
 const doctor_cmd = @import("commands/doctor.zig");
 const upgrade_cmd = @import("commands/upgrade.zig");
 const kernel = @import("lib/kernel.zig");
+const userconfig = @import("lib/userconfig.zig");
 const banner = @import("lib/banner.zig");
 const prompt = @import("lib/prompt.zig");
 
@@ -68,6 +69,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const io = threaded.io();
     var env_map = try init.environ.createMap(allocator);
     defer env_map.deinit();
+
+    // Load persistent config (~/.config/hkm/config.env) so values written by
+    // `hkm-config` take effect. Real environment variables always win.
+    userconfig.load(allocator, io, &env_map);
 
     const args = try init.args.toSlice(allocator);
 
