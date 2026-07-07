@@ -8,10 +8,10 @@
 
 ## WHAT THIS PROJECT IS
 
-**Framework:** AlfacodeTeam PhpServicePlatform — a PHP 8.2+ framework built on the **Gated Demand Architecture (GDA)** pattern.
+**Framework:** AlfacodeTeam PhpServicePlatform — a PHP 8.4+ framework built on the **Gated Demand Architecture (GDA)** pattern.
 **Package:**   `alfacode-team/php-service-platform`
 **Namespace:** `AlfacodeTeam\PhpServicePlatform\Kernel\`
-**PHP:**       8.2+ (uses readonly classes, enums, named arguments, fibers)
+**PHP:**       8.4+ (uses readonly classes, enums, named arguments, fibers)
 
 This is NOT Laravel. This is NOT Symfony. This is NOT Slim.
 Do NOT suggest those frameworks' patterns, classes, or conventions.

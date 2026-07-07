@@ -7,7 +7,7 @@
 #   cd <kernel dir>   # the folder holding composer.json (…/opt/hkm-kernel)
 #   ./install.sh
 #
-# Requires on the TARGET machine: php >= 8.2 and composer, plus network access
+# Requires on the TARGET machine: php >= 8.4 and composer, plus network access
 # to download packages. vendor/ is intentionally NOT shipped — it is built here
 # so the runtime matches the target's exact PHP.
 # ---------------------------------------------------------------------------
@@ -16,7 +16,7 @@ set -eu
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
-command -v php >/dev/null 2>&1 || { echo "error: php not found on PATH (need >= 8.2)"; exit 1; }
+command -v php >/dev/null 2>&1 || { echo "error: php not found on PATH (need >= 8.4)"; exit 1; }
 
 # If the bundle was built with MODULES=git, the composer PATH-repository modules
 # were NOT shipped — fetch each at its pinned commit from GitHub. Skipped when
