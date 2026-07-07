@@ -32,6 +32,7 @@ fn printHelp() void {
     prompt.blank();
 
     prompt.section("Environment");
+    prompt.muted("all auto-detected — override only for a non-standard layout");
     prompt.item("HKM_PHP_BIN", "override php binary (default: php)");
     prompt.item("HKM_CLI_PATH", "override target php CLI script");
     prompt.item("HKM_GLOBAL_AUTOLOAD", "override global autoload path");
