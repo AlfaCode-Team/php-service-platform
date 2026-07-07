@@ -23,13 +23,17 @@ jobs:
         with: { submodules: recursive }   # path-repo modules must be present
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.2"
+          php-version: "8.4"
           tools: composer
           extensions: mbstring, curl, pdo, pdo_sqlite, openssl, fileinfo, zip
       - name: Install dependencies (with dev)
         run: composer install --no-interaction --no-progress
       - name: Run test suite
         run: vendor/bin/phpunit --no-coverage
+
+  # Every bundle is built on Linux — Zig cross-compiles all targets, and the
+  # macOS universal binary is assembled with llvm-lipo. This needs only ONE
+  # self-hosted Zig toolchain (Linux) and no macOS runner.
 
   # ── Linux: .deb (amd64) ────────────────────────────────────────────────────
   build-linux:
@@ -39,10 +43,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
-      - uses: mlugg/setup-zig@v1
-        with: { version: "0.17.0-dev.657+2faf8debf" }
+      - name: Setup Zig
+        run: ./tools/ci/setup-zig.sh
+        env: { ZIG_DIST_URL: "${{ vars.ZIG_DIST_URL }}" }
       - uses: shivammathur/setup-php@v2
-        with: { php-version: "8.2", tools: composer }
+        with: { php-version: "8.4", tools: composer }
       - name: Bundle (linux)
         run: VERSION="${GITHUB_REF_NAME#v}" ./tools/bundle.sh linux
       - uses: actions/upload-artifact@v4
@@ -56,27 +61,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
-      - uses: mlugg/setup-zig@v1
-        with: { version: "0.17.0-dev.657+2faf8debf" }
+      - name: Setup Zig
+        run: ./tools/ci/setup-zig.sh
+        env: { ZIG_DIST_URL: "${{ vars.ZIG_DIST_URL }}" }
       - uses: shivammathur/setup-php@v2
-        with: { php-version: "8.2", tools: composer }
+        with: { php-version: "8.4", tools: composer }
       - name: Bundle (windows)
         run: VERSION="${GITHUB_REF_NAME#v}" ./tools/bundle.sh windows
       - uses: actions/upload-artifact@v4
         with: { name: windows-zip, path: dist/*.zip }
 
-  # ── macOS: universal .app tarball (arm64 + x86_64) ────────────────────────
+  # ── macOS: universal .app tarball (arm64 + x86_64), built ON LINUX ─────────
   build-macos:
     name: Build macOS .app
     needs: test
-    runs-on: macos-14
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
-      - uses: mlugg/setup-zig@v1
-        with: { version: "0.17.0-dev.657+2faf8debf" }
+      - name: Install llvm-lipo (for the universal Mach-O)
+        run: sudo apt-get update && sudo apt-get install -y llvm
+      - name: Setup Zig
+        run: ./tools/ci/setup-zig.sh
+        env: { ZIG_DIST_URL: "${{ vars.ZIG_DIST_URL }}" }
       - uses: shivammathur/setup-php@v2
-        with: { php-version: "8.2", tools: composer }
+        with: { php-version: "8.4", tools: composer }
       - name: Bundle (macos)
         run: VERSION="${GITHUB_REF_NAME#v}" ./tools/bundle.sh macos
       - uses: actions/upload-artifact@v4

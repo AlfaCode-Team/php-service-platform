@@ -38,6 +38,7 @@ php_errors.log
 # ── BUILD ARTIFACTS (If you compile the CLI) ──────────────────
 /build/
 /dist/
+/dist-toolchain/
 *.phar
 
 # ── RUNTIME STATE (per-project var/ is ephemeral, regenerable) ─
