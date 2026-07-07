@@ -112,6 +112,19 @@ fn runCheck(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !u8 {
         wrote = true;
     }
 
+    // 4. Ensure a PERSISTENT userdata dir holds the registry (projects.json +
+    //    platform.json) so kernel updates never overwrite it. Seed from the
+    //    kernel defaults, then pin HKM_USERDATA_DIR.
+    const userdata = try ensureUserdata(allocator, io, env, home);
+    if (userdata) |ud| {
+        prompt.item("userdata dir", ud);
+        const cur = try userconfig.get(allocator, io, env, "HKM_USERDATA_DIR");
+        if (cur == null or !std.mem.eql(u8, cur.?, ud)) {
+            try userconfig.set(allocator, io, env, "HKM_USERDATA_DIR", ud);
+            wrote = true;
+        }
+    }
+
     prompt.blank();
     if (!have_vendor) {
         prompt.warn("kernel dependencies are not installed.");
@@ -125,10 +138,52 @@ fn runCheck(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !u8 {
     }
 
     if (wrote) {
-        prompt.ok("configuration written — HKM_KERNEL_HOME pinned.");
+        prompt.ok("configuration written — HKM_KERNEL_HOME + HKM_USERDATA_DIR pinned.");
     } else {
         prompt.ok("configuration is complete.");
     }
     prompt.muted("verify the runtime with: hkm doctor");
     return 0;
+}
+
+/// Resolve (and create + seed) the persistent userdata directory that holds the
+/// registry files. Order: existing HKM_USERDATA_DIR → XDG_DATA_HOME/hkm →
+/// HOME/.local/share/hkm. Seeds projects.json ({}) and platform.json (copied
+/// from the kernel default) when absent. Returns the dir, or null if unresolvable.
+fn ensureUserdata(allocator: std.mem.Allocator, io: Io, env: *EnvMap, home: []const u8) !?[]const u8 {
+    const dir: []const u8 = blk: {
+        if (env.get("HKM_USERDATA_DIR")) |d| {
+            if (d.len > 0) break :blk try allocator.dupe(u8, d);
+        }
+        if (env.get("XDG_DATA_HOME")) |x| {
+            if (x.len > 0) break :blk try std.fs.path.join(allocator, &.{ x, "hkm" });
+        }
+        if (env.get("HOME")) |h| {
+            if (h.len > 0) break :blk try std.fs.path.join(allocator, &.{ h, ".local", "share", "hkm" });
+        }
+        return null;
+    };
+
+    const cwd = std.Io.Dir.cwd();
+    cwd.createDirPath(io, dir) catch {};
+
+    // Seed projects.json: migrate an existing kernel registry if present (so
+    // relocating doesn't drop registrations), else start with an empty one.
+    const proj = try std.fs.path.join(allocator, &.{ dir, "projects.json" });
+    if (!util.fileExists(io, proj)) {
+        const src = try std.fs.path.join(allocator, &.{ home, "projects", "projects.json" });
+        const data = cwd.readFileAlloc(io, src, allocator, .limited(8 * 1024 * 1024)) catch "{}\n";
+        cwd.writeFile(io, .{ .sub_path = proj, .data = data }) catch {};
+    }
+
+    // Seed platform.json from the kernel's shipped default, else a minimal map.
+    const plat = try std.fs.path.join(allocator, &.{ dir, "platform.json" });
+    if (!util.fileExists(io, plat)) {
+        const src = try std.fs.path.join(allocator, &.{ home, "projects", "platform.json" });
+        const data = cwd.readFileAlloc(io, src, allocator, .limited(1024 * 1024)) catch
+            "{\n    \"subdomains\": { \"admin\": [\"app\"], \"api\": [\"api\"] }\n}\n";
+        cwd.writeFile(io, .{ .sub_path = plat, .data = data }) catch {};
+    }
+
+    return dir;
 }
