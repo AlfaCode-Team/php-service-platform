@@ -13,7 +13,7 @@ const banner = @import("lib/banner.zig");
 const prompt = @import("lib/prompt.zig");
 
 fn printHelp() void {
-    prompt.intro("hkm launcher");
+    banner.print();
 
     prompt.section("Usage");
     prompt.item("hkm new <path> [opts]", "scaffold a new PhpServicePlatform project");
