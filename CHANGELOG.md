@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Scaffolding templates moved from `tools/src/templates/` to a top-level
+  `templates/` directory so they ship inside the kernel payload. `tools/` is not
+  bundled, which previously broke `hkm new` / `hkm ui init` on packaged installs.
+
 ### Fixed
 - `hkm run` / `hkm run --pick` / the registry now **self-locate the installed
   kernel** (`/opt/hkm-kernel`, or the dir relative to the launcher) instead of
