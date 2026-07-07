@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-07-08
+
 ### Changed
 - Scaffolding templates moved from `tools/src/templates/` to a top-level
   `templates/` directory so they ship inside the kernel payload. `tools/` is not
@@ -82,5 +84,8 @@ macOS, and Windows, built and published automatically from a `v*` tag.
   (`phpunit.xml` is gitignored).
 - Windows cross-compilation: guarded POSIX-only raw-mode TTY code.
 
-[Unreleased]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/AlfaCode-Team/php-service-platform/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/AlfaCode-Team/php-service-platform/releases/tag/v1.0.0
