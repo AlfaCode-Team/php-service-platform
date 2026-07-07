@@ -56,7 +56,10 @@ try {
     // 4. Last-resort net for anything the kernel's own ErrorStage could not
     //    handle. In debug we surface the message; in production we never leak
     //    internals — just a generic 500.
-    $debug = filter_var($_ENV['APP_DEBUG'] ?? getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOL);
+    // Debug output is NEVER shown in production, even if APP_DEBUG was left true
+    // (defense-in-depth against leaking internals from a mis-set .env).
+    $isProd = (($_ENV['APP_ENV'] ?? getenv('APP_ENV') ?: 'production') === 'production');
+    $debug  = !$isProd && filter_var($_ENV['APP_DEBUG'] ?? getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOL);
     Response::json([
         'error' => [
             'code'    => 'kernel.unhandled',
