@@ -7,6 +7,13 @@ pub fn build(b: *std.Build) void {
     // `--release=safe` → ~4MB (keeps runtime safety checks), `--release=fast`.
     const optimize = b.standardOptimizeOption(.{});
 
+    // Version stamped into the binary. `zig build -Dversion=1.0.0` (bundle.sh
+    // passes the release VERSION); defaults to a dev marker for local builds.
+    const version = b.option([]const u8, "version", "Version string stamped into the binary") orelse "0.0.0-dev";
+    const build_info = b.addOptions();
+    build_info.addOption([]const u8, "version", version);
+    build_info.addOption([]const u8, "repo", "AlfaCode-Team/php-service-platform");
+
     const launcher = b.addExecutable(.{
         .name = "hkm",
         .root_module = b.createModule(.{
@@ -15,6 +22,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    launcher.root_module.addOptions("build_info", build_info);
     b.installArtifact(launcher);
 
     const config_tool = b.addExecutable(.{
@@ -25,6 +33,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    config_tool.root_module.addOptions("build_info", build_info);
     b.installArtifact(config_tool);
 
     // Also drop the native launcher + config tool into the repo-level bin/ (next

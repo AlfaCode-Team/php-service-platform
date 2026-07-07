@@ -14,12 +14,31 @@ env:
   ZIG_VERSION: "0.17.0-dev.657+2faf8debf"
 
 jobs:
-  # ── Linux: .deb (amd64) ────────────────────────────────────────────────────
-  build-linux:
-    name: Build Linux .deb
+  # ── Gate: run the PHPUnit suite. Nothing builds or publishes unless GREEN. ──
+  test:
+    name: Test (PHPUnit)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with: { submodules: recursive }   # path-repo modules must be present
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+          extensions: mbstring, curl, pdo, pdo_sqlite, openssl, fileinfo, zip
+      - name: Install dependencies (with dev)
+        run: composer install --no-interaction --no-progress
+      - name: Run test suite
+        run: vendor/bin/phpunit --no-coverage
+
+  # ── Linux: .deb (amd64) ────────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux .deb
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
       - uses: mlugg/setup-zig@v1
         with: { version: "0.17.0-dev.657+2faf8debf" }
       - uses: shivammathur/setup-php@v2
@@ -32,9 +51,11 @@ jobs:
   # ── Windows: .zip (x86_64, cross-compiled) ────────────────────────────────
   build-windows:
     name: Build Windows .zip
+    needs: test
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with: { submodules: recursive }
       - uses: mlugg/setup-zig@v1
         with: { version: "0.17.0-dev.657+2faf8debf" }
       - uses: shivammathur/setup-php@v2
@@ -47,9 +68,11 @@ jobs:
   # ── macOS: universal .app tarball (arm64 + x86_64) ────────────────────────
   build-macos:
     name: Build macOS .app
+    needs: test
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with: { submodules: recursive }
       - uses: mlugg/setup-zig@v1
         with: { version: "0.17.0-dev.657+2faf8debf" }
       - uses: shivammathur/setup-php@v2
