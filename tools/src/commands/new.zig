@@ -9,16 +9,16 @@
 //! project with NO PHP / Composer present — only `composer install` is needed
 //! afterwards to pull the kernel + plugins.
 //!
-//! The generated files are kept as real templates under `tools/src/templates/`
+//! The generated files are kept as real templates under `templates/`
 //! and read from a templates DIRECTORY at runtime — they are NOT embedded in the
 //! binary, so they can be edited without recompiling. Resolution order for the
 //! directory (first hit wins):
 //!
 //!   1. HKM_TEMPLATES_DIR                         (explicit override)
-//!   2. HKM_KERNEL_HOME/tools/src/templates       (dev / installed kernel)
+//!   2. HKM_KERNEL_HOME/templates       (dev / installed kernel)
 //!   3. <exe_dir>/templates                       (packaged alongside binary)
 //!   4. <exe_dir>/../share/hkm/templates          (packaged FHS layout)
-//!   5. <kernel_root>/tools/src/templates         (inferred from the registry)
+//!   5. <kernel_root>/templates         (inferred from the registry)
 //!
 //! If none can be found, `new` fails with a clear message — there is no
 //! compiled-in fallback. Templates use three tokens substituted per project:
@@ -44,7 +44,7 @@ const Template = struct {
 };
 
 /// Every file the scaffolder writes. `src` is read from the resolved templates
-/// dir at runtime (relative to tools/src/templates/).
+/// dir at runtime (relative to the templates dir).
 const templates = [_]Template{
     .{ .dest = "proj.json", .src = "proj.json" },
     .{ .dest = "composer.json", .src = "composer.json" },
