@@ -65,6 +65,44 @@ pub fn findCliPath(allocator: std.mem.Allocator, io: Io, env: *EnvMap) ![]const 
     return (try resolve(allocator, io, env)).path;
 }
 
+/// A directory is a kernel root if it holds composer.json (true for both the
+/// dev monorepo and an installed /opt/hkm-kernel).
+fn isKernelRoot(io: Io, dir: []const u8) bool {
+    var buf: [4096]u8 = undefined;
+    const marker = std.fmt.bufPrint(&buf, "{s}/composer.json", .{dir}) catch return false;
+    return util.fileExists(io, marker);
+}
+
+/// Resolve the kernel ROOT directory (the folder holding composer.json, vendor/,
+/// projects/). Used by `run`, the registry, and `hkm-config`. Order:
+///   1. HKM_KERNEL_HOME
+///   2. self-located relative to THIS executable (installed .deb/.app/zip, or the
+///      dev monorepo when running repo/bin/hkm)
+///   3. /opt/hkm-kernel default
+/// Returns null when no kernel can be found.
+pub fn resolveHome(allocator: std.mem.Allocator, io: Io, env: *EnvMap) !?[]const u8 {
+    if (env.get("HKM_KERNEL_HOME")) |h| {
+        if (h.len > 0) return util.trimSlash(h);
+    }
+    if (std.process.executableDirPathAlloc(io, allocator)) |dir| {
+        // parent = the dir ABOVE the executable's dir (normalized, no "..").
+        const parent = std.fs.path.dirname(dir) orelse dir;
+        const rels = [_][]const []const u8{
+            &.{ parent, "Resources", "opt", "hkm-kernel" }, // macOS .app (MacOS→Contents)
+            &.{ dir, "hkm-kernel" }, // windows/portable zip
+            &.{ parent, "opt", "hkm-kernel" }, // portable
+            &.{ parent, "lib", "hkm-kernel" },
+            &.{parent}, // dev monorepo: repo/bin/hkm → repo root
+        };
+        for (rels) |parts| {
+            const cand = try std.fs.path.join(allocator, parts);
+            if (isKernelRoot(io, cand)) return cand;
+        }
+    } else |_| {}
+    if (isKernelRoot(io, "/opt/hkm-kernel")) return "/opt/hkm-kernel";
+    return null;
+}
+
 pub fn sourceLabel(s: Source) []const u8 {
     return switch (s) {
         .cli_path_env => "HKM_CLI_PATH override",
