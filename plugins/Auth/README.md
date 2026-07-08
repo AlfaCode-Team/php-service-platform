@@ -6,7 +6,7 @@ It does **not** do authorization policy (that's your service layer) and it is
 **not** the multi-tenant control plane (that's `Plugins\Tenancy`).
 
 > 📄 A full typeset walkthrough ships alongside this file: [`AUTH_GUIDE.pdf`](AUTH_GUIDE.pdf).
-> Deep-dive reference: [`docs/ai-context/25_AUTH.md`](../../docs/ai-context/25_AUTH.md).
+> Deep-dive reference: see the Auth design notes in this README below.
 
 ## The one split to remember
 
@@ -308,5 +308,4 @@ unserialize a recaller · confuse `personal_access_tokens` (user keys) with
 
 ---
 
-*OAuth 2.1 / OIDC authorization-server flows live in `Plugins\OAuth2`
-([`docs/ai-context/26_OAUTH2.md`](../../docs/ai-context/26_OAUTH2.md)).*
+*OAuth 2.1 / OIDC authorization-server flows live in the `Plugins\OAuth2` plugin.*
